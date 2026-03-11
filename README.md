@@ -35,7 +35,7 @@ cp target/keycloak-webhook-spi-1.0.0-SNAPSHOT.jar /opt/keycloak/providers/
 
 Via environment variables:
 ```bash
-KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_URL=http://x3:9080/keycloak-webhook
+KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_URL=http://x3:9080/keycloak-webhook,http://nefarious:9090/keycloak-webhook
 KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_SECRET=your-shared-secret
 KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_RETRY_COUNT=3
 KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_SEND_ALL_EVENTS=false
@@ -43,11 +43,13 @@ KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_SEND_ALL_EVENTS=false
 
 Or via keycloak.conf:
 ```properties
-spi-events-listener-webhook-events-url=http://x3:9080/keycloak-webhook
+spi-events-listener-webhook-events-url=http://x3:9080/keycloak-webhook,http://nefarious:9090/keycloak-webhook
 spi-events-listener-webhook-events-secret=your-shared-secret
 spi-events-listener-webhook-events-retry-count=3
 spi-events-listener-webhook-events-send-all-events=false
 ```
+
+The URL parameter accepts comma-separated values to deliver events to multiple endpoints independently.
 
 ### Enable
 
@@ -59,7 +61,7 @@ In Keycloak Admin Console:
 
 | Option | Environment Variable | Default | Description |
 |--------|---------------------|---------|-------------|
-| url | KC_SPI_...URL | (none) | Target webhook URL |
+| url | KC_SPI_...URL | (none) | Target webhook URL(s), comma-separated for multi-endpoint |
 | secret | KC_SPI_...SECRET | (none) | Shared secret for X-Webhook-Secret header |
 | retry-count | KC_SPI_...RETRY_COUNT | 3 | Number of retry attempts |
 | send-all-events | KC_SPI_...SEND_ALL_EVENTS | false | Send all events (vs X3-relevant only) |
@@ -175,7 +177,7 @@ While designed for X3, this SPI can be used for:
 - **Analytics**: Track authentication patterns and usage metrics
 - **Alerting**: Send login failures to Slack/Discord/PagerDuty
 
-Set `send-all-events=true` and configure multiple webhook targets by deploying separate instances with different configurations.
+Set `send-all-events=true` and configure multiple webhook targets via comma-separated URLs.
 
 ## Development
 
