@@ -74,7 +74,7 @@ public class ScramCredentialProvider implements CredentialProvider<CredentialMod
         // By returning "password" we were interfering with credential imports via Admin API.
         // We only want to intercept password CHANGES via CredentialInputUpdater,
         // not manage password credentials directly.
-        return ScramCredentialProviderFactory.PROVIDER_ID;  // "x3-scram-sha256"
+        return ScramCredentialProviderFactory.PROVIDER_ID;  // "scram-sha256"
     }
 
     @Override
@@ -146,7 +146,7 @@ public class ScramCredentialProvider implements CredentialProvider<CredentialMod
 
     // ========== CredentialProvider interface (minimal implementation) ==========
     // These methods are required by the interface but we don't manage credentials directly.
-    // Our type is "x3-scram-sha256" so these won't be called for password operations.
+    // Our type is "scram-sha256" so these won't be called for password operations.
 
     @Override
     public CredentialModel getCredentialFromModel(CredentialModel model) {
@@ -155,7 +155,7 @@ public class ScramCredentialProvider implements CredentialProvider<CredentialMod
 
     @Override
     public CredentialModel createCredential(RealmModel realm, UserModel user, CredentialModel credential) {
-        return null;  // We don't create credentials directly - x3-scram-sha256 type is never imported
+        return null;  // We don't create credentials directly - scram-sha256 type is never imported
     }
 
     @Override

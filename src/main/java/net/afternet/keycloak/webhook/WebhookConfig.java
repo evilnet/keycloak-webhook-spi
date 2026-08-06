@@ -62,7 +62,8 @@ public class WebhookConfig {
     /**
      * Get the shared secret for authentication.
      *
-     * <p>This is sent as the X-Webhook-Secret header to match X3's expectations.</p>
+     * <p>This is sent as the X-Webhook-Secret header to match the receiving
+     * services' expectations.</p>
      *
      * @return the webhook secret, or null if not configured
      */
@@ -82,8 +83,9 @@ public class WebhookConfig {
     /**
      * Check if all events should be sent.
      *
-     * <p>If false (default), only X3-relevant events are sent (GROUP_MEMBERSHIP,
-     * CREDENTIAL, USER, etc.). If true, all events are forwarded.</p>
+     * <p>If false (default), only account/credential-relevant events are sent
+     * (GROUP_MEMBERSHIP, CREDENTIAL, USER, etc.). If true, all events are
+     * forwarded.</p>
      *
      * @return true if all events should be sent
      */

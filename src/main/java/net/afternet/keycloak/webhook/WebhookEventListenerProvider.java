@@ -46,16 +46,16 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
     private final HttpClient httpClient;
     private final Gson gson;
 
-    // Resource types relevant to X3 IRC services
-    private static final Set<ResourceType> X3_RESOURCE_TYPES = Set.of(
+    // Resource types relevant to watching account/services consumers
+    private static final Set<ResourceType> WATCHED_RESOURCE_TYPES = Set.of(
         ResourceType.USER,
         ResourceType.GROUP,
         ResourceType.GROUP_MEMBERSHIP,
         ResourceType.REALM_ROLE_MAPPING
     );
 
-    // User events relevant to X3 (credential changes affect SASL/SCRAM caches)
-    private static final Set<EventType> X3_USER_EVENTS = Set.of(
+    // User events worth watching (credential changes affect SASL/SCRAM caches)
+    private static final Set<EventType> WATCHED_USER_EVENTS = Set.of(
         EventType.UPDATE_CREDENTIAL,
         EventType.REMOVE_CREDENTIAL,
         EventType.UPDATE_PASSWORD,
@@ -82,8 +82,8 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
             return;
         }
 
-        // Filter to only X3-relevant events unless configured to send all
-        if (!config.isSendAllEvents() && !X3_USER_EVENTS.contains(event.getType())) {
+        // Filter to only watched events unless configured to send all
+        if (!config.isSendAllEvents() && !WATCHED_USER_EVENTS.contains(event.getType())) {
             LOG.debugf("Skipping user event type: %s", event.getType());
             return;
         }
@@ -104,8 +104,8 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
             return;
         }
 
-        // Filter to only X3-relevant resource types unless configured to send all
-        if (!config.isSendAllEvents() && !X3_RESOURCE_TYPES.contains(event.getResourceType())) {
+        // Filter to only watched resource types unless configured to send all
+        if (!config.isSendAllEvents() && !WATCHED_RESOURCE_TYPES.contains(event.getResourceType())) {
             LOG.debugf("Skipping admin event resource type: %s", event.getResourceType());
             return;
         }

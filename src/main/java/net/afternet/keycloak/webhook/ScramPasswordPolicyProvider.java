@@ -25,7 +25,8 @@ import java.util.Base64;
  * SCRAM credentials when passwords are set through Keycloak's UI/API.
  * Unlike CredentialProvider, password policies only run during interactive
  * password changes, NOT during Admin API credential imports with pre-hashed
- * values. This makes it safe to use alongside X3's PBKDF2 credential sync.</p>
+ * values. This makes it safe to use alongside externally-imported PBKDF2
+ * credentials.</p>
  *
  * <p>The generated SCRAM credentials are stored in user attributes:</p>
  * <ul>
