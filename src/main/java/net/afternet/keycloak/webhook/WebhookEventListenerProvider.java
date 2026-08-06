@@ -172,7 +172,9 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
     /**
      * Fetch user's SCRAM credentials from attributes and add to JSON payload.
      *
-     * <p>Looks for attributes set by ScramCredentialProvider:</p>
+     * <p>Looks for attributes set by ScramPasswordPolicyProvider (the live
+     * producer of these attributes — ScramCredentialProvider is disabled;
+     * see its META-INF/services registration):</p>
      * <ul>
      *   <li>scram_sha256_salt - Base64-encoded salt</li>
      *   <li>scram_sha256_iterations - Iteration count</li>
@@ -180,10 +182,15 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
      *   <li>scram_sha256_server_key - Base64-encoded ServerKey</li>
      * </ul>
      *
-     * <p>These attributes are consumed by the Nefarious ircd's SASL
-     * SCRAM-SHA-256 path; the derivation parameters (SHA-256, 4096
-     * iterations, 16-byte salt) are in lockstep with
-     * {@code nefarious/ircd/kc/kc_cred_derive.c} — change one, change both.</p>
+     * <p>The Nefarious ircd's SASL SCRAM-SHA-256 path consumes these same
+     * attributes via an admin-REST user fetch, not via this webhook payload;
+     * the derivation parameters (SHA-256, 4096 iterations, 16-byte salt) are
+     * in lockstep with {@code nefarious/ircd/kc/kc_cred_derive.c} — change
+     * one, change both. This webhook payload additionally carries the
+     * attributes for cache-invalidation consumers, but is currently
+     * unconsumed on the ircd side: its credential-event handler
+     * ({@code sasl_webhook.c: handle_credential_event}) only invalidates
+     * caches and does not read these fields out of the payload.</p>
      */
     private void addUserScramCredentials(JsonObject json, String realmId, String userId) {
         RealmModel realm = session.realms().getRealm(realmId);
