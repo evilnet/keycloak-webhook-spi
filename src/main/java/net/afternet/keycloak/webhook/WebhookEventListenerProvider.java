@@ -174,11 +174,16 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
      *
      * <p>Looks for attributes set by ScramCredentialProvider:</p>
      * <ul>
-     *   <li>x3_scram_salt - Base64-encoded salt</li>
-     *   <li>x3_scram_iterations - Iteration count</li>
-     *   <li>x3_scram_stored_key - Base64-encoded StoredKey</li>
-     *   <li>x3_scram_server_key - Base64-encoded ServerKey</li>
+     *   <li>scram_sha256_salt - Base64-encoded salt</li>
+     *   <li>scram_sha256_iterations - Iteration count</li>
+     *   <li>scram_sha256_stored_key - Base64-encoded StoredKey</li>
+     *   <li>scram_sha256_server_key - Base64-encoded ServerKey</li>
      * </ul>
+     *
+     * <p>These attributes are consumed by the Nefarious ircd's SASL
+     * SCRAM-SHA-256 path; the derivation parameters (SHA-256, 4096
+     * iterations, 16-byte salt) are in lockstep with
+     * {@code nefarious/ircd/kc/kc_cred_derive.c} — change one, change both.</p>
      */
     private void addUserScramCredentials(JsonObject json, String realmId, String userId) {
         RealmModel realm = session.realms().getRealm(realmId);

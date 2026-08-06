@@ -29,14 +29,16 @@ import java.util.Base64;
  *
  * <p>The generated SCRAM credentials are stored in user attributes:</p>
  * <ul>
- *   <li>x3_scram_salt - Base64-encoded salt</li>
- *   <li>x3_scram_iterations - Iteration count (4096)</li>
- *   <li>x3_scram_stored_key - Base64-encoded StoredKey</li>
- *   <li>x3_scram_server_key - Base64-encoded ServerKey</li>
+ *   <li>scram_sha256_salt - Base64-encoded salt</li>
+ *   <li>scram_sha256_iterations - Iteration count (4096)</li>
+ *   <li>scram_sha256_stored_key - Base64-encoded StoredKey</li>
+ *   <li>scram_sha256_server_key - Base64-encoded ServerKey</li>
  * </ul>
  *
- * <p>The WebhookEventListener then includes these in password change events
- * so X3 can update its SCRAM cache.</p>
+ * <p>These attributes are consumed by the Nefarious ircd's SASL
+ * SCRAM-SHA-256 path; the derivation parameters (SHA-256, 4096
+ * iterations, 16-byte salt) are in lockstep with
+ * {@code nefarious/ircd/kc/kc_cred_derive.c} — change one, change both.</p>
  */
 public class ScramPasswordPolicyProvider implements PasswordPolicyProvider {
 
@@ -50,10 +52,10 @@ public class ScramPasswordPolicyProvider implements PasswordPolicyProvider {
     private static final int HASH_LENGTH = 32;  // SHA-256 output
 
     // User attribute names (same as ScramCredentialProvider for compatibility)
-    public static final String ATTR_SCRAM_SALT = "x3_scram_salt";
-    public static final String ATTR_SCRAM_ITERATIONS = "x3_scram_iterations";
-    public static final String ATTR_SCRAM_STORED_KEY = "x3_scram_stored_key";
-    public static final String ATTR_SCRAM_SERVER_KEY = "x3_scram_server_key";
+    public static final String ATTR_SCRAM_SALT = "scram_sha256_salt";
+    public static final String ATTR_SCRAM_ITERATIONS = "scram_sha256_iterations";
+    public static final String ATTR_SCRAM_STORED_KEY = "scram_sha256_stored_key";
+    public static final String ATTR_SCRAM_SERVER_KEY = "scram_sha256_server_key";
 
     private final KeycloakSession session;
 
