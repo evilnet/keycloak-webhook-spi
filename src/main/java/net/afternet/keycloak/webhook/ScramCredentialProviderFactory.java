@@ -21,7 +21,7 @@ public class ScramCredentialProviderFactory implements CredentialProviderFactory
 
     private static final Logger LOG = Logger.getLogger(ScramCredentialProviderFactory.class);
 
-    public static final String PROVIDER_ID = "x3-scram-sha256";
+    public static final String PROVIDER_ID = "scram-sha256";
 
     @Override
     public ScramCredentialProvider create(KeycloakSession session) {

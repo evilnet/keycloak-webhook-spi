@@ -33,14 +33,17 @@ import java.util.stream.Stream;
  *
  * <p>User attributes stored:</p>
  * <ul>
- *   <li>x3_scram_salt - Base64-encoded salt</li>
- *   <li>x3_scram_iterations - Iteration count (4096)</li>
- *   <li>x3_scram_stored_key - Base64-encoded StoredKey</li>
- *   <li>x3_scram_server_key - Base64-encoded ServerKey</li>
+ *   <li>scram_sha256_salt - Base64-encoded salt</li>
+ *   <li>scram_sha256_iterations - Iteration count (4096)</li>
+ *   <li>scram_sha256_stored_key - Base64-encoded StoredKey</li>
+ *   <li>scram_sha256_server_key - Base64-encoded ServerKey</li>
  * </ul>
  *
  * <p>These attributes are NOT visible to users (configured as internal)
- * but can be read by the webhook listener.</p>
+ * but are consumed by the Nefarious ircd's SASL SCRAM-SHA-256 path. The
+ * derivation parameters here (SHA-256, 4096 iterations, 16-byte salt) are
+ * in lockstep with {@code nefarious/ircd/kc/kc_cred_derive.c} — change
+ * one, change both.</p>
  */
 public class ScramCredentialProvider implements CredentialProvider<CredentialModel>, CredentialInputUpdater {
 
@@ -54,10 +57,10 @@ public class ScramCredentialProvider implements CredentialProvider<CredentialMod
     private static final int HASH_LENGTH = 32;  // SHA-256 output
 
     // User attribute names
-    public static final String ATTR_SCRAM_SALT = "x3_scram_salt";
-    public static final String ATTR_SCRAM_ITERATIONS = "x3_scram_iterations";
-    public static final String ATTR_SCRAM_STORED_KEY = "x3_scram_stored_key";
-    public static final String ATTR_SCRAM_SERVER_KEY = "x3_scram_server_key";
+    public static final String ATTR_SCRAM_SALT = "scram_sha256_salt";
+    public static final String ATTR_SCRAM_ITERATIONS = "scram_sha256_iterations";
+    public static final String ATTR_SCRAM_STORED_KEY = "scram_sha256_stored_key";
+    public static final String ATTR_SCRAM_SERVER_KEY = "scram_sha256_server_key";
 
     private final KeycloakSession session;
 
@@ -71,7 +74,7 @@ public class ScramCredentialProvider implements CredentialProvider<CredentialMod
         // By returning "password" we were interfering with credential imports via Admin API.
         // We only want to intercept password CHANGES via CredentialInputUpdater,
         // not manage password credentials directly.
-        return ScramCredentialProviderFactory.PROVIDER_ID;  // "x3-scram-sha256"
+        return ScramCredentialProviderFactory.PROVIDER_ID;  // "scram-sha256"
     }
 
     @Override
@@ -143,7 +146,7 @@ public class ScramCredentialProvider implements CredentialProvider<CredentialMod
 
     // ========== CredentialProvider interface (minimal implementation) ==========
     // These methods are required by the interface but we don't manage credentials directly.
-    // Our type is "x3-scram-sha256" so these won't be called for password operations.
+    // Our type is "scram-sha256" so these won't be called for password operations.
 
     @Override
     public CredentialModel getCredentialFromModel(CredentialModel model) {
@@ -152,7 +155,7 @@ public class ScramCredentialProvider implements CredentialProvider<CredentialMod
 
     @Override
     public CredentialModel createCredential(RealmModel realm, UserModel user, CredentialModel credential) {
-        return null;  // We don't create credentials directly - x3-scram-sha256 type is never imported
+        return null;  // We don't create credentials directly - scram-sha256 type is never imported
     }
 
     @Override

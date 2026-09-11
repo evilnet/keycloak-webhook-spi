@@ -13,23 +13,23 @@ import org.keycloak.policy.PasswordPolicyProviderFactory;
  * <p>This factory creates password policy providers that generate SCRAM-SHA-256
  * credentials when passwords are set through Keycloak's interactive flows.</p>
  *
- * <p>To enable this policy, add "x3Scram" to the realm's password policy:</p>
+ * <p>To enable this policy, add "scramSha256" to the realm's password policy:</p>
  * <pre>
- *   Realm Settings -> Authentication -> Password Policy -> Add Policy -> x3Scram
+ *   Realm Settings -> Authentication -> Password Policy -> Add Policy -> scramSha256
  * </pre>
  *
  * <p>Or via Admin API:</p>
  * <pre>
  *   PUT /admin/realms/{realm}
- *   { "passwordPolicy": "x3Scram and length(8) and ..." }
+ *   { "passwordPolicy": "scramSha256 and length(8) and ..." }
  * </pre>
  */
 public class ScramPasswordPolicyProviderFactory implements PasswordPolicyProviderFactory {
 
     private static final Logger LOG = Logger.getLogger(ScramPasswordPolicyProviderFactory.class);
 
-    public static final String PROVIDER_ID = "x3Scram";
-    public static final String DISPLAY_NAME = "X3 SCRAM-SHA-256";
+    public static final String PROVIDER_ID = "scramSha256";
+    public static final String DISPLAY_NAME = "SCRAM-SHA-256";
 
     @Override
     public PasswordPolicyProvider create(KeycloakSession session) {

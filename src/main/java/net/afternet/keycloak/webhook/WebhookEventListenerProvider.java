@@ -46,16 +46,16 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
     private final HttpClient httpClient;
     private final Gson gson;
 
-    // Resource types relevant to X3 IRC services
-    private static final Set<ResourceType> X3_RESOURCE_TYPES = Set.of(
+    // Resource types relevant to watching account/services consumers
+    private static final Set<ResourceType> WATCHED_RESOURCE_TYPES = Set.of(
         ResourceType.USER,
         ResourceType.GROUP,
         ResourceType.GROUP_MEMBERSHIP,
         ResourceType.REALM_ROLE_MAPPING
     );
 
-    // User events relevant to X3 (credential changes affect SASL/SCRAM caches)
-    private static final Set<EventType> X3_USER_EVENTS = Set.of(
+    // User events worth watching (credential changes affect SASL/SCRAM caches)
+    private static final Set<EventType> WATCHED_USER_EVENTS = Set.of(
         EventType.UPDATE_CREDENTIAL,
         EventType.REMOVE_CREDENTIAL,
         EventType.UPDATE_PASSWORD,
@@ -82,8 +82,8 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
             return;
         }
 
-        // Filter to only X3-relevant events unless configured to send all
-        if (!config.isSendAllEvents() && !X3_USER_EVENTS.contains(event.getType())) {
+        // Filter to only watched events unless configured to send all
+        if (!config.isSendAllEvents() && !WATCHED_USER_EVENTS.contains(event.getType())) {
             LOG.debugf("Skipping user event type: %s", event.getType());
             return;
         }
@@ -104,8 +104,8 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
             return;
         }
 
-        // Filter to only X3-relevant resource types unless configured to send all
-        if (!config.isSendAllEvents() && !X3_RESOURCE_TYPES.contains(event.getResourceType())) {
+        // Filter to only watched resource types unless configured to send all
+        if (!config.isSendAllEvents() && !WATCHED_RESOURCE_TYPES.contains(event.getResourceType())) {
             LOG.debugf("Skipping admin event resource type: %s", event.getResourceType());
             return;
         }
@@ -172,13 +172,25 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
     /**
      * Fetch user's SCRAM credentials from attributes and add to JSON payload.
      *
-     * <p>Looks for attributes set by ScramCredentialProvider:</p>
+     * <p>Looks for attributes set by ScramPasswordPolicyProvider (the live
+     * producer of these attributes — ScramCredentialProvider is disabled;
+     * see its META-INF/services registration):</p>
      * <ul>
-     *   <li>x3_scram_salt - Base64-encoded salt</li>
-     *   <li>x3_scram_iterations - Iteration count</li>
-     *   <li>x3_scram_stored_key - Base64-encoded StoredKey</li>
-     *   <li>x3_scram_server_key - Base64-encoded ServerKey</li>
+     *   <li>scram_sha256_salt - Base64-encoded salt</li>
+     *   <li>scram_sha256_iterations - Iteration count</li>
+     *   <li>scram_sha256_stored_key - Base64-encoded StoredKey</li>
+     *   <li>scram_sha256_server_key - Base64-encoded ServerKey</li>
      * </ul>
+     *
+     * <p>The Nefarious ircd's SASL SCRAM-SHA-256 path consumes these same
+     * attributes via an admin-REST user fetch, not via this webhook payload;
+     * the derivation parameters (SHA-256, 4096 iterations, 16-byte salt) are
+     * in lockstep with {@code nefarious/ircd/kc/kc_cred_derive.c} — change
+     * one, change both. This webhook payload additionally carries the
+     * attributes for cache-invalidation consumers, but is currently
+     * unconsumed on the ircd side: its credential-event handler
+     * ({@code sasl_webhook.c: handle_credential_event}) only invalidates
+     * caches and does not read these fields out of the payload.</p>
      */
     private void addUserScramCredentials(JsonObject json, String realmId, String userId) {
         RealmModel realm = session.realms().getRealm(realmId);
