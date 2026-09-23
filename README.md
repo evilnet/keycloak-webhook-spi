@@ -131,16 +131,23 @@ The only consumer is the Nefarious ircd (`ircd/sasl_webhook.c`, via the vendored
 
 | Event | Subject | What the ircd does |
 |---|---|---|
-| `USER` / `DELETE` | `resourcePath` uuid | purges its auth caches by id, deauths every session of the account (or disconnects local sockets when `WEBHOOK_KILL_ON_DELETE` is on) |
-| `USER` / `UPDATE` with `enabled:false` | uuid (and `representation.username` when full) | same, as a disable (`WEBHOOK_KILL_ON_DISABLE`) |
+| `USER` / `DELETE` on `users/<uuid>` | `resourcePath` uuid | purges its auth caches by id, deauths the sessions it can name (below), or disconnects local sockets when `WEBHOOK_KILL_ON_DELETE` is on |
+| `USER` / `UPDATE` on `users/<uuid>` with `enabled:false` | uuid (and `representation.username` when full) | same, as a disable (`WEBHOOK_KILL_ON_DISABLE`) |
 | `USER` / `ACTION` `users/<uuid>/reset-password` | uuid | purges its auth caches by id |
+| `USER` / `DELETE` or `ACTION` on `users/<uuid>/credentials/<id>` | uuid | purges its auth caches by id |
+| `USER` / `DELETE` or `UPDATE` on any other sub-resource of the user (federated identity, consent, ...) | -- | nothing: it is not the user |
 | credential change user events | root `username` | purges its auth caches by name |
 | everything else | -- | logged, ignored |
 
-The ircd resolves the uuid against the Keycloak id it stores for every logged-in
-client and every positive-cache entry (the ID token's `sub`, compact form), so
-no username is needed on admin events.  A root-level `username` is honoured when
-present (synthetic events, tests).
+The ircd resolves the uuid against the Keycloak id it stores for every client
+that logged in through its own Keycloak SASL and every positive-cache entry (the
+ID token's `sub`, compact form), so no username is needed on admin events.  A
+session is deauthed when something names its account: the payload's own
+`username` (synthetic events, a full representation), the account of a client
+carrying the id, or the account of a cache entry the id purge dropped.  A session
+that was authenticated through X3, or behind a legacy hop, or restored from the
+bouncer database carries no id; a real (nameless) event does not reach it, and
+the ircd logs a warning naming the id.
 
 ## Docker Integration
 
