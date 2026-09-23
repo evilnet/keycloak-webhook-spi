@@ -6,7 +6,7 @@ A reusable Keycloak extension that sends admin and user events to configurable w
 
 - Sends Admin Events (user management, group membership, credentials) via HTTP POST
 - Sends User Events (login, credential changes) via HTTP POST
-- Configurable event filtering (X3-relevant events by default, or all events)
+- Configurable event filtering (the events the Nefarious ircd acts on by default, or all events)
 - Shared secret authentication via `X-Webhook-Secret` header
 - Exponential backoff retry on failures
 - Async delivery to avoid blocking Keycloak operations
@@ -35,7 +35,7 @@ cp target/keycloak-webhook-spi-1.0.0-SNAPSHOT.jar /opt/keycloak/providers/
 
 Via environment variables:
 ```bash
-KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_URL=http://x3:9080/keycloak-webhook,http://nefarious:9090/keycloak-webhook
+KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_URL=http://nefarious:9090/keycloak-webhook
 KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_SECRET=your-shared-secret
 KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_RETRY_COUNT=3
 KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_SEND_ALL_EVENTS=false
@@ -43,7 +43,7 @@ KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_SEND_ALL_EVENTS=false
 
 Or via keycloak.conf:
 ```properties
-spi-events-listener-webhook-events-url=http://x3:9080/keycloak-webhook,http://nefarious:9090/keycloak-webhook
+spi-events-listener-webhook-events-url=http://nefarious:9090/keycloak-webhook
 spi-events-listener-webhook-events-secret=your-shared-secret
 spi-events-listener-webhook-events-retry-count=3
 spi-events-listener-webhook-events-send-all-events=false
@@ -64,25 +64,26 @@ In Keycloak Admin Console:
 | url | KC_SPI_...URL | (none) | Target webhook URL(s), comma-separated for multi-endpoint |
 | secret | KC_SPI_...SECRET | (none) | Shared secret for X-Webhook-Secret header |
 | retry-count | KC_SPI_...RETRY_COUNT | 3 | Number of retry attempts |
-| send-all-events | KC_SPI_...SEND_ALL_EVENTS | false | Send all events (vs X3-relevant only) |
+| send-all-events | KC_SPI_...SEND_ALL_EVENTS | false | Send all events (vs the ones the ircd acts on) |
 
 ## Event Formats
 
 ### Admin Events
 
-Sent for: USER, GROUP, GROUP_MEMBERSHIP, CREDENTIAL operations
+Keycloak admin events are forwarded as they are, plus nothing: the subject of a
+`USER` event is named only by the uuid in `resourcePath`.
 
 ```json
 {
   "id": "event-uuid",
   "time": 1234567890000,
   "realmId": "realm-uuid",
-  "resourceType": "GROUP_MEMBERSHIP",
-  "operationType": "CREATE",
-  "resourcePath": "users/user-uuid/groups/group-uuid",
+  "resourceType": "USER",
+  "operationType": "DELETE",
+  "resourcePath": "users/<user-uuid>",
   "representation": "{...}",
   "authDetails": {
-    "userId": "admin-uuid",
+    "userId": "<acting admin uuid>",
     "ipAddress": "192.168.1.1",
     "realmId": "master",
     "clientId": "admin-cli"
@@ -90,9 +91,19 @@ Sent for: USER, GROUP, GROUP_MEMBERSHIP, CREDENTIAL operations
 }
 ```
 
+`representation` is present when Keycloak recorded one (create: the full user;
+update: the fields that changed, so `enabled` appears only when it changed;
+delete and actions: absent).  `authDetails` names the acting admin, never the
+subject; consumers must not read it as the subject.
+
 ### User Events
 
 Sent for: UPDATE_CREDENTIAL, REMOVE_CREDENTIAL, UPDATE_PASSWORD, RESET_PASSWORD
+
+User events are forwarded with the event's own fields, mapped onto
+`resourceType`/`operationType` like an admin event; credential-change events
+additionally carry the user's `username` at the root and, when the realm's
+password policy stores them, the SCRAM-SHA-256 verifier attributes.
 
 ```json
 {
@@ -103,6 +114,7 @@ Sent for: UPDATE_CREDENTIAL, REMOVE_CREDENTIAL, UPDATE_PASSWORD, RESET_PASSWORD
   "resourceType": "CREDENTIAL",
   "operationType": "UPDATE",
   "userId": "user-uuid",
+  "username": "alice",
   "clientId": "account",
   "ipAddress": "192.168.1.1",
   "sessionId": "session-uuid",
@@ -112,20 +124,23 @@ Sent for: UPDATE_CREDENTIAL, REMOVE_CREDENTIAL, UPDATE_PASSWORD, RESET_PASSWORD
 }
 ```
 
-## X3 IRC Services Integration
+## Consumer contract: the Nefarious ircd
 
-This SPI is designed to work with X3's webhook handler (`keycloak_webhook.c`). X3 uses webhooks to:
+The only consumer is the Nefarious ircd (`ircd/sasl_webhook.c`, via the vendored
+`kc_webhook` parser).  What it needs per event:
 
-- Invalidate SCRAM/password caches on credential changes
-- Trigger channel sync on GROUP_MEMBERSHIP changes
-- Clear user sessions on USER_SESSION delete
-- Pre-warm fingerprint cache on x509 credential creation
+| Event | Subject | What the ircd does |
+|---|---|---|
+| `USER` / `DELETE` | `resourcePath` uuid | purges its auth caches by id, deauths every session of the account (or disconnects local sockets when `WEBHOOK_KILL_ON_DELETE` is on) |
+| `USER` / `UPDATE` with `enabled:false` | uuid (and `representation.username` when full) | same, as a disable (`WEBHOOK_KILL_ON_DISABLE`) |
+| `USER` / `ACTION` `users/<uuid>/reset-password` | uuid | purges its auth caches by id |
+| credential change user events | root `username` | purges its auth caches by name |
+| everything else | -- | logged, ignored |
 
-Configure X3 in x3.conf:
-```
-"keycloak_webhook_port" "9080";
-"keycloak_webhook_secret" "your-shared-secret";
-```
+The ircd resolves the uuid against the Keycloak id it stores for every logged-in
+client and every positive-cache entry (the ID token's `sub`, compact form), so
+no username is needed on admin events.  A root-level `username` is honoured when
+present (synthetic events, tests).
 
 ## Docker Integration
 
@@ -160,8 +175,8 @@ services:
     volumes:
       - keycloak_providers:/opt/keycloak/providers
     environment:
-      - KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_URL=http://x3:9080/keycloak-webhook
-      - KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_SECRET=x3-webhook-secret
+      - KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_URL=http://nefarious:9090/keycloak-webhook
+      - KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_SECRET=your-shared-secret
     command: start-dev
 
 volumes:
@@ -170,7 +185,7 @@ volumes:
 
 ## Broader Use Cases
 
-While designed for X3, this SPI can be used for:
+While written for the Nefarious ircd, this SPI can be used for:
 
 - **Audit/SIEM**: Forward all events to security monitoring systems
 - **User Provisioning**: Trigger external workflows on user creation
