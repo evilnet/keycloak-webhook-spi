@@ -355,8 +355,15 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
     private String realmName(String realmId) {
         try {
             RealmModel realm = session.realms().getRealm(realmId);
-            return realm == null ? null : realm.getName();
+            if (realm == null) {
+                LOG.warnf("Realm %s not found; the event goes out without realmName, which a "
+                          + "consumer that checks the realm accepts but counts", realmId);
+                return null;
+            }
+            return realm.getName();
         } catch (Exception e) {
+            LOG.warnf("Realm %s could not be resolved (%s); the event goes out without realmName",
+                      realmId, e.toString());
             return null;
         }
     }
