@@ -42,8 +42,10 @@ KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_SEND_ALL_EVENTS=false
 ```
 
 The URL setting is a comma-separated list, and every event is posted to every URL with
-its own retries.  List every ircd of the network: each verifies the signature and dedupes
-by the event id on its own, and relays the event to the peers the SPI could not reach.
+its own retries.  One reachable ircd is enough: each receiver verifies the signature,
+dedupes by the event id, relays the event to every server linked to it, and catches a
+server up on the events it missed when it links back.  Listing a hub (or a few) covers
+that hub being down; listing every ircd is the most reliable, not a requirement.
 
 Or via keycloak.conf:
 ```properties
