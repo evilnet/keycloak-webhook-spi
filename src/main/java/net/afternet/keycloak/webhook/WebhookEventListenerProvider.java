@@ -11,6 +11,11 @@ import org.keycloak.events.admin.AdminEvent;
 import org.keycloak.events.admin.ResourceType;
 import org.keycloak.models.KeycloakSession;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
 
@@ -131,6 +136,10 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
         json.addProperty("id", event.getId());
         json.addProperty("time", event.getTime());
         json.addProperty("realmId", event.getRealmId());
+        String realmName = realmName(event.getRealmId());
+        if (realmName != null) {
+            json.addProperty("realmName", realmName);
+        }
         json.addProperty("type", event.getType().name());
         json.addProperty("userId", event.getUserId());
         json.addProperty("clientId", event.getClientId());
@@ -267,6 +276,10 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
         json.addProperty("id", event.getId());
         json.addProperty("time", event.getTime());
         json.addProperty("realmId", event.getRealmId());
+        String realmName = realmName(event.getRealmId());
+        if (realmName != null) {
+            json.addProperty("realmName", realmName);
+        }
         json.addProperty("resourceType", event.getResourceType().name());
         json.addProperty("operationType", event.getOperationType().name());
         json.addProperty("resourcePath", event.getResourcePath());
@@ -317,6 +330,37 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
     /**
      * Send webhook asynchronously to all configured URLs with retry logic.
      */
+    /** HMAC-SHA256 over "<t>.<body>", lowercase hex; the ircd verifies the same bytes. */
+    static String sign(String secret, long t, String body) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            byte[] d = mac.doFinal((t + "." + body).getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(d.length * 2);
+            for (byte b : d) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            throw new IllegalStateException("HmacSHA256 unavailable", e);
+        }
+    }
+
+    /** The X-Webhook-Signature value: t=<unix seconds>,v1=<hex digest>. */
+    static String signatureHeader(String secret, long t, String body) {
+        return "t=" + t + ",v1=" + sign(secret, t, body);
+    }
+
+    /** The realm's name (events carry only its uuid); null when it cannot be resolved. */
+    private String realmName(String realmId) {
+        try {
+            RealmModel realm = session.realms().getRealm(realmId);
+            return realm == null ? null : realm.getName();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private void sendWebhookAsync(String payload) {
         for (String url : config.getWebhookUrls()) {
             CompletableFuture.runAsync(() -> sendWithRetry(url, payload, config.getRetryCount()));
@@ -365,6 +409,9 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
         // Add secret header if configured (the ircd's X-Webhook-Secret)
         if (config.getWebhookSecret() != null && !config.getWebhookSecret().isEmpty()) {
             requestBuilder.header("X-Webhook-Secret", config.getWebhookSecret());
+            // The ircd refuses unsigned, stale or replayed deliveries: sign the body with the same secret.
+            requestBuilder.header("X-Webhook-Signature",
+                signatureHeader(config.getWebhookSecret(), Instant.now().getEpochSecond(), payload));
         }
 
         HttpResponse<String> response = httpClient.send(

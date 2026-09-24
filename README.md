@@ -149,6 +149,14 @@ that was authenticated through X3, or behind a legacy hop, or restored from the
 bouncer database carries no id; a real (nameless) event does not reach it, and
 the ircd logs a warning naming the id.
 
+Every delivery carries `X-Webhook-Signature: t=<unix seconds>,v1=<hex>` (HMAC-SHA256 over
+`<t>.<body>` with the shared secret) beside `X-Webhook-Secret`, and every payload carries
+`realmName`.  A consumer that checks them (the Nefarious ircd does) refuses an unsigned,
+stale (outside its window, 300 s by default) or other-realm delivery, and a played-back
+copy of an accepted event (same event id, a signature no newer than the last accepted
+one); this SPI's own retry of an accepted event, signed again with a newer `t`, is
+answered 200 and not acted on again, so a lost answer never applies an event twice.
+
 ## Docker Integration
 
 ### Custom Keycloak Image
