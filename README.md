@@ -41,6 +41,10 @@ KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_RETRY_COUNT=3
 KC_SPI_EVENTS_LISTENER_WEBHOOK_EVENTS_SEND_ALL_EVENTS=false
 ```
 
+The URL setting is a comma-separated list, and every event is posted to every URL with
+its own retries.  List every ircd of the network: each verifies the signature and dedupes
+by the event id on its own, and relays the event to the peers the SPI could not reach.
+
 Or via keycloak.conf:
 ```properties
 spi-events-listener-webhook-events-url=http://nefarious:9090/keycloak-webhook
