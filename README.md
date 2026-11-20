@@ -269,8 +269,9 @@ and the path segment is percent-decoded.  An unknown user is 404 with body
 ```
 
 `scram` is left out when the user has no SCRAM verifier or when the verifier no longer matches
-the user's current password.  The response carries the StoredKey and ServerKey by design;
-the endpoint never logs them.
+the user's current password.  `ecdsaPublicKey` (the user's ECDSA key as canonical PEM, see
+"ECDSA keys" below) is present only when the user has one.  The response carries the StoredKey
+and ServerKey by design; the endpoint never logs them.
 
 Create the role (and give it to the IRC server's service account), and put the login steps in
 the realm's flows (see "Password grant: why an account was refused" and "SCRAM verifier" below),
@@ -379,6 +380,37 @@ provider.
 Run `--drop-legacy-scram-attributes` (it removes those attributes from every user and prints how
 many users it changed) only after every IRC server has stopped reading them.  It needs the
 realm's unmanaged attribute policy to let an admin edit them (`ENABLED` or `ADMIN_EDIT`).
+
+## ECDSA keys
+
+A user can log in on IRC with an ECDSA P-256 key (SASL ECDSA-NIST256P-CHALLENGE).  The public
+key is a credential of type `irc-ecdsa-pubkey`, at most one per user: storing a key replaces the
+one there was.  It holds no secret; its `credentialData` is `{"publicKey": "<PEM>"}`, and the
+read endpoint returns the same PEM as `ecdsaPublicKey`.
+
+A key is accepted in any of three forms, with surrounding whitespace ignored: a PEM
+`PUBLIC KEY` block, the base64 of the DER SubjectPublicKeyInfo, or the base64 of the raw point
+(33-byte compressed, as `ecdsatool` prints it, or 65-byte uncompressed).  It is stored as one
+canonical PEM (`-----BEGIN PUBLIC KEY-----`, base64 in 64-character lines, trailing newline),
+the form OpenSSL's `PEM_read_bio_PUBKEY` reads.  Anything else is refused: a key on another
+curve, a point that is not on P-256, input longer than 1024 characters, and anything that is not
+a key.
+
+- **The user** adds a key from the account page, which lists "IRC login (ECDSA key)" with a
+  set-up action, the required action `irc-ecdsa-enroll` ("IRC: add an ECDSA key"): a form with
+  one field, `publicKey`.  A key that is not accepted shows the form again with
+  `irc-ecdsa-invalid-key`; the submitted text is not shown back.  As for any action started from
+  the account page, Keycloak first asks a user whose login is older than the action's maximum
+  authentication age (5 minutes by default) to log in again.  The user can remove the key there
+  too.
+- **An admin** can load a key through the admin API as a credential
+  (`{"type": "irc-ecdsa-pubkey", "credentialData": "{\"publicKey\": \"...\"}"}`, any accepted
+  form); a value that is not accepted is answered 400 and leaves the user's key as it was.
+
+The realm set-up tool registers `irc-ecdsa-enroll` and enables it (it is not a default action, so
+no user is asked for a key at login).  The account page lists the type only because
+`irc-credential-sync` (in the flows the tool binds) names it as an optional reference category;
+without that step in an enabled flow the entry is not shown.
 
 ## Development
 

@@ -1,7 +1,9 @@
 package io.github.evilnet.keycloak.irc.login;
 
+import io.github.evilnet.keycloak.irc.ecdsa.IrcEcdsaCredentialProvider;
 import io.github.evilnet.keycloak.irc.scram.IrcScramCredentialProvider;
 import java.util.List;
+import java.util.Set;
 import org.keycloak.Config;
 import org.keycloak.authentication.Authenticator;
 import org.keycloak.authentication.AuthenticatorFactory;
@@ -12,8 +14,9 @@ import org.keycloak.provider.ProviderConfigProperty;
 
 /**
  * Registers the {@value #PROVIDER_ID} authenticator.  Its reference category is the
- * {@code irc-scram-sha256} credential type: Keycloak's account page lists a credential type
- * only when an enabled execution in one of the realm's flows names it this way.
+ * {@code irc-scram-sha256} credential type, and {@code irc-ecdsa-pubkey} an optional one:
+ * Keycloak's account page lists a credential type only when an enabled execution in one of the
+ * realm's flows names it this way.
  */
 public class IrcCredentialSyncAuthenticatorFactory implements AuthenticatorFactory {
 
@@ -47,6 +50,12 @@ public class IrcCredentialSyncAuthenticatorFactory implements AuthenticatorFacto
     @Override
     public String getReferenceCategory() {
         return IrcScramCredentialProvider.TYPE;
+    }
+
+    /** The ECDSA key type is listed on the account page through this step too; no flow step of its own reads it. */
+    @Override
+    public Set<String> getOptionalReferenceCategories(KeycloakSession session) {
+        return Set.of(IrcEcdsaCredentialProvider.TYPE);
     }
 
     @Override

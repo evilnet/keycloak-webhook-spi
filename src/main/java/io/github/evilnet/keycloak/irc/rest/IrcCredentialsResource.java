@@ -1,5 +1,6 @@
 package io.github.evilnet.keycloak.irc.rest;
 
+import io.github.evilnet.keycloak.irc.ecdsa.IrcEcdsaCredentialProvider;
 import io.github.evilnet.keycloak.irc.scram.IrcScramCredentialProvider;
 import io.github.evilnet.keycloak.irc.scram.ScramVerifier;
 import io.github.evilnet.keycloak.irc.state.AccountState;
@@ -66,6 +67,7 @@ public class IrcCredentialsResource {
         body.put("reasons", state.reasons());
         Optional<ScramVerifier> scram = new IrcScramCredentialProvider(session).current(user);
         scram.ifPresent(v -> body.put("scram", scramBody(v)));
+        new IrcEcdsaCredentialProvider(session).current(user).ifPresent(pem -> body.put("ecdsaPublicKey", pem));
         return reply(Response.Status.OK, body);
     }
 

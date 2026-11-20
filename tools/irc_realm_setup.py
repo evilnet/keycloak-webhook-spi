@@ -20,6 +20,9 @@ and binds both copies to the realm:
 A copy an earlier version set up is brought to this layout.  If a bound flow has no password
 step, it exits 1 before changing anything.
 
+Registers and enables the required action `irc-ecdsa-enroll` (not a default action), with which
+a user adds an ECDSA key from the account page.
+
 With --drop-legacy-scram-attributes, also removes the SCRAM verifier user attributes of earlier
 versions (scram_sha256_*, x3_scram_*) from every user and prints how many users it changed.
 """
@@ -43,6 +46,9 @@ FLOW_COPIES = (
     ("irc direct grant", "directGrantFlow", "direct-grant-validate-password", LAST, (ACCOUNT_STATE_STEP, SYNC_STEP)),
     ("irc browser", "browserFlow", "auth-username-password-form", AFTER_PASSWORD, (SYNC_STEP,)),
 )
+
+ECDSA_ENROLL = "irc-ecdsa-enroll"
+ECDSA_ENROLL_NAME = "IRC: add an ECDSA key"
 
 LEGACY_SCRAM_ATTRIBUTES = ("scram_sha256_salt", "scram_sha256_iterations",
                            "scram_sha256_stored_key", "scram_sha256_server_key")
@@ -100,6 +106,19 @@ def ensure_role(session, realm, service_client=None):
         _, current = session.request("GET", mappings)
         if not any(m["name"] == ROLE for m in current):
             session.request("POST", mappings, [{"id": role["id"], "name": ROLE}])
+
+
+def ensure_required_action(session, realm):
+    """Register the irc-ecdsa-enroll required action if missing; make it enabled and not a default action."""
+    r = _q(realm)
+    path = "/admin/realms/%s/authentication/required-actions/%s" % (r, _q(ECDSA_ENROLL))
+    status, action = session.request("GET", path, ok=(200, 404))
+    if status == 404:
+        session.request("POST", "/admin/realms/%s/authentication/register-required-action" % r,
+                        {"providerId": ECDSA_ENROLL, "name": ECDSA_ENROLL_NAME})
+        _, action = session.request("GET", path)
+    if not action.get("enabled") or action.get("defaultAction"):
+        session.request("PUT", path, dict(action, enabled=True, defaultAction=False))
 
 
 def _q(value):
@@ -295,6 +314,7 @@ def main(argv=None):
         session = Session(a.url, login(a.url, a.admin_user, password))
         flows = plan_flows(session, a.realm)   # refuses before the first write
         ensure_role(session, a.realm, a.service_client)
+        ensure_required_action(session, a.realm)
         apply_flows(session, a.realm, flows)
         if a.drop_legacy_scram_attributes:
             drop_legacy_scram_attributes(session, a.realm)
