@@ -183,8 +183,7 @@ public class WebhookEventListenerProvider implements EventListenerProvider {
      * Fetch user's SCRAM credentials from attributes and add to JSON payload.
      *
      * <p>Looks for attributes set by ScramPasswordPolicyProvider (the live
-     * producer of these attributes — ScramCredentialProvider is disabled;
-     * see its META-INF/services registration):</p>
+     * producer of these attributes):</p>
      * <ul>
      *   <li>scram_sha256_salt - Base64-encoded salt</li>
      *   <li>scram_sha256_iterations - Iteration count</li>

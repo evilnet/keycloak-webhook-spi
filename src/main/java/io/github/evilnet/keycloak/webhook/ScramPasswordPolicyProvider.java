@@ -52,7 +52,7 @@ public class ScramPasswordPolicyProvider implements PasswordPolicyProvider {
     private static final String HMAC_ALGORITHM = "HmacSHA256";
     private static final int HASH_LENGTH = 32;  // SHA-256 output
 
-    // User attribute names (same as ScramCredentialProvider for compatibility)
+    // User attribute names (read by the webhook listener and the ircd)
     public static final String ATTR_SCRAM_SALT = "scram_sha256_salt";
     public static final String ATTR_SCRAM_ITERATIONS = "scram_sha256_iterations";
     public static final String ATTR_SCRAM_STORED_KEY = "scram_sha256_stored_key";
