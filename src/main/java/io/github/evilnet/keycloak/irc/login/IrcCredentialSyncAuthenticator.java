@@ -1,5 +1,6 @@
 package io.github.evilnet.keycloak.irc.login;
 
+import io.github.evilnet.keycloak.irc.AfterCommitJob;
 import io.github.evilnet.keycloak.irc.scram.IrcScramCredentialProvider;
 import io.github.evilnet.keycloak.irc.scram.LegacyScramAttributes;
 import io.github.evilnet.keycloak.irc.scram.ScramVerifier;
@@ -8,11 +9,9 @@ import java.util.Optional;
 import org.jboss.logging.Logger;
 import org.keycloak.authentication.AuthenticationFlowContext;
 import org.keycloak.authentication.Authenticator;
-import org.keycloak.models.AbstractKeycloakTransaction;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
-import org.keycloak.models.utils.KeycloakModelUtils;
 import org.keycloak.representations.idm.CredentialRepresentation;
 
 /**
@@ -27,11 +26,13 @@ import org.keycloak.representations.idm.CredentialRepresentation;
  * <p>It never fails a login: it always ends in {@code success()}, and a request without a
  * {@code password} form parameter (a login that did not prove a password) changes nothing.</p>
  *
- * <p>The work runs after the login's transaction has committed, in a transaction of its own.
- * Keycloak re-hashes a password whose hash does not meet the realm's policy (an imported or
- * legacy hash) in an after-completion job enlisted by the password step, and the verifier is
- * bound to the stored hash; enlisted after that job, the sync sees the password as it will
- * stay, so a re-hash on login never leaves the verifier stale.</p>
+ * <p>The work runs after the login's transaction has committed, as two {@link AfterCommitJob}s,
+ * each in a transaction of its own: the verifier first, then the legacy attributes, so a failed
+ * attribute removal can never undo or prevent the verifier.  Keycloak re-hashes a password whose
+ * hash does not meet the realm's policy (an imported or legacy hash) in an after-completion job
+ * enlisted by the password step, and the verifier is bound to the stored hash; enlisted after
+ * that job, the sync sees the password as it will stay, so a re-hash on login never leaves the
+ * verifier stale.</p>
  */
 public class IrcCredentialSyncAuthenticator implements Authenticator {
 
@@ -44,8 +45,12 @@ public class IrcCredentialSyncAuthenticator implements Authenticator {
             String password = context.getHttpRequest().getDecodedFormParameters()
                     .getFirst(CredentialRepresentation.PASSWORD);
             if (user != null && password != null && !password.isEmpty()) {
-                context.getSession().getTransactionManager().enlistAfterCompletion(
-                        new SyncAfterLogin(context.getSession(), context.getRealm().getId(), user.getId(), password));
+                String realmId = context.getRealm().getId();
+                String userId = user.getId();
+                AfterCommitJob.enlist(context.getSession(), "IRC credential sync (verifier)", userId,
+                        s -> storeVerifier(s, realmId, userId, password));
+                AfterCommitJob.enlist(context.getSession(), "IRC credential sync (legacy attributes)", userId,
+                        s -> LegacyScramAttributes.removeStale(s, realmId, userId, password));
             }
         } catch (RuntimeException e) {
             LOG.warnf("IRC credential sync skipped for user %s: %s",
@@ -54,7 +59,7 @@ public class IrcCredentialSyncAuthenticator implements Authenticator {
         context.success();
     }
 
-    private static void sync(KeycloakSession session, String realmId, String userId, String password) {
+    private static void storeVerifier(KeycloakSession session, String realmId, String userId, String password) {
         RealmModel realm = session.realms().getRealm(realmId);
         UserModel user = realm == null ? null : session.users().getUserById(realm, userId);
         if (user == null) {
@@ -64,7 +69,6 @@ public class IrcCredentialSyncAuthenticator implements Authenticator {
         if (needsNewVerifier(scram.current(user), password)) {
             scram.store(realm, user, ScramVerifier.deriveRandom(password));
         }
-        LegacyScramAttributes.removeStale(user, password);
     }
 
     /**
@@ -100,36 +104,5 @@ public class IrcCredentialSyncAuthenticator implements Authenticator {
 
     @Override
     public void close() {
-    }
-
-    /** Runs the sync in its own transaction once the login's transaction has committed. */
-    private static final class SyncAfterLogin extends AbstractKeycloakTransaction {
-
-        private final KeycloakSession session;
-        private final String realmId;
-        private final String userId;
-        private final String password;
-
-        SyncAfterLogin(KeycloakSession session, String realmId, String userId, String password) {
-            this.session = session;
-            this.realmId = realmId;
-            this.userId = userId;
-            this.password = password;
-        }
-
-        @Override
-        protected void commitImpl() {
-            try {
-                KeycloakModelUtils.runJobInTransaction(session.getKeycloakSessionFactory(), session.getContext(),
-                        s -> sync(s, realmId, userId, password));
-            } catch (RuntimeException e) {
-                // The class name only: a persistence error's message can quote the values it tried to write.
-                LOG.warnf("IRC credential sync failed for user %s: %s", userId, e.getClass().getName());
-            }
-        }
-
-        @Override
-        protected void rollbackImpl() {
-        }
     }
 }

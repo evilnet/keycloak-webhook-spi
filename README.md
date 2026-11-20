@@ -327,6 +327,11 @@ is for a different password:
   ones that do not match or cannot be read, keeping the ones that match (servers that still read
   attributes need them).
 
+The removal runs after the verifier is stored, in a transaction of its own, so a failed removal
+never undoes or prevents the verifier or the password change.  It writes to Keycloak's own
+database, where these attributes live, so it also works for a user linked to a READ_ONLY LDAP
+provider.
+
 Run `--drop-legacy-scram-attributes` (it removes those attributes from every user and prints how
 many users it changed) only after every IRC server has stopped reading them.  It needs the
 realm's unmanaged attribute policy to let an admin edit them (`ENABLED` or `ADMIN_EDIT`).

@@ -1,5 +1,6 @@
 package io.github.evilnet.keycloak.webhook;
 
+import io.github.evilnet.keycloak.irc.AfterCommitJob;
 import io.github.evilnet.keycloak.irc.scram.IrcScramCredentialProvider;
 import io.github.evilnet.keycloak.irc.scram.LegacyScramAttributes;
 import io.github.evilnet.keycloak.irc.scram.ScramVerifier;
@@ -25,8 +26,10 @@ import org.keycloak.policy.PolicyError;
  * with none (an LDAP-linked user, whose password lives in the directory), when the new
  * password now validates for the user (for LDAP, a bind).  If the change was refused or
  * failed, nothing is stored; if the transaction rolls back, the prepare phase does not run.
- * With the store, every legacy attribute verifier of the user is removed
- * ({@link LegacyScramAttributes}): it is for the old password.</p>
+ * After the store, every legacy attribute verifier of the user is removed
+ * ({@link LegacyScramAttributes}): it is for the old password.  The removal runs after the
+ * commit in a transaction of its own ({@link AfterCommitJob}), so its failure can neither
+ * undo nor prevent the password change or the stored verifier.</p>
  *
  * <p>Pre-hashed passwords loaded through the admin API never reach a policy; those users get
  * a verifier at their first password login ({@code irc-credential-sync}).</p>
@@ -97,7 +100,10 @@ public class ScramPasswordPolicyProvider implements PasswordPolicyProvider {
                     return;
                 }
                 new IrcScramCredentialProvider(session).store(realm, user, verifier);
-                LegacyScramAttributes.removeAll(user);
+                // In its own transaction after the commit: a failed removal cannot undo the password change or the store.
+                String realmId = realm.getId();
+                AfterCommitJob.enlist(session, "Legacy SCRAM attribute removal", userId,
+                        s -> LegacyScramAttributes.removeAll(s, realmId, userId));
             } catch (RuntimeException e) {
                 // A throw here would fail the commit, and with it the password change.
                 LOG.warnf("SCRAM verifier not stored for user %s: %s", userId, e.getClass().getName());
