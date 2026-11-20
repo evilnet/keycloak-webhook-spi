@@ -1,0 +1,17 @@
+dn: uid=alice,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: alice
+userPassword:: e01ENX1YcjRpbE96UTRQQ09xM2FRMHFidWFRPT0=
+
+dn: uid=bob,ou=people,dc=example,dc=org
+uid: bob
+userPassword: {SSHA}uJDd0BIdJ9Z7yDCZNWdgYeb33+cBAgME
+
+dn: uid=carol,ou=people,dc=example,dc=org
+uid: carol
+cn: Carol
+
+dn: uid=dave,ou=people,dc=example,dc=org
+uid: dave
+userPassword: {MD5}Xr4ilOz
+ Q4PCOq3aQ0qbuaQ==
