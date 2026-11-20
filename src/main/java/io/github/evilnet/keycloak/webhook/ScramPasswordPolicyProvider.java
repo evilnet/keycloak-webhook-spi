@@ -1,62 +1,33 @@
 package io.github.evilnet.keycloak.webhook;
 
+import io.github.evilnet.keycloak.irc.scram.IrcScramCredentialProvider;
+import io.github.evilnet.keycloak.irc.scram.ScramVerifier;
 import org.jboss.logging.Logger;
+import org.keycloak.models.AbstractKeycloakTransaction;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.policy.PasswordPolicyProvider;
 import org.keycloak.policy.PolicyError;
 
-import javax.crypto.Mac;
-import javax.crypto.SecretKeyFactory;
-import javax.crypto.spec.PBEKeySpec;
-import javax.crypto.spec.SecretKeySpec;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.security.SecureRandom;
-import java.security.spec.InvalidKeySpecException;
-import java.util.Base64;
-
 /**
- * Password policy provider that generates SCRAM-SHA-256 credentials.
+ * Password policy {@code scramSha256}: when a password is set through Keycloak, stores a
+ * SCRAM-SHA-256 verifier of it as the user's {@code irc-scram-sha256} credential.  It never
+ * rejects a password.
  *
- * <p>This provider hooks into the password validation flow to generate
- * SCRAM credentials when passwords are set through Keycloak's UI/API.
- * Unlike CredentialProvider, password policies only run during interactive
- * password changes, NOT during Admin API credential imports with pre-hashed
- * values. This makes it safe to use alongside externally-imported PBKDF2
- * credentials.</p>
+ * <p>The policy runs before Keycloak saves the new password, so the verifier cannot be bound
+ * to that password yet.  It is derived here and stored in the transaction's prepare phase,
+ * after the new password is saved and before the commit, so the stored verifier is bound to
+ * the new password.  If the password was not saved (another policy refused it, or the change
+ * failed), the user's password credentials are unchanged at that point and nothing is stored;
+ * if the transaction rolls back, the prepare phase does not run.</p>
  *
- * <p>The generated SCRAM credentials are stored in user attributes:</p>
- * <ul>
- *   <li>scram_sha256_salt - Base64-encoded salt</li>
- *   <li>scram_sha256_iterations - Iteration count (4096)</li>
- *   <li>scram_sha256_stored_key - Base64-encoded StoredKey</li>
- *   <li>scram_sha256_server_key - Base64-encoded ServerKey</li>
- * </ul>
- *
- * <p>These attributes are consumed by the Nefarious ircd's SASL
- * SCRAM-SHA-256 path; the derivation parameters (SHA-256, 4096
- * iterations, 16-byte salt) are in lockstep with
- * {@code nefarious/ircd/kc/kc_cred_derive.c} — change one, change both.</p>
+ * <p>Pre-hashed passwords loaded through the admin API never reach a policy; those users get
+ * a verifier at their first password login ({@code irc-credential-sync}).</p>
  */
 public class ScramPasswordPolicyProvider implements PasswordPolicyProvider {
 
     private static final Logger LOG = Logger.getLogger(ScramPasswordPolicyProvider.class);
-
-    // SCRAM-SHA-256 parameters (RFC 7677)
-    private static final int SCRAM_ITERATIONS = 4096;
-    private static final int SALT_LENGTH = 16;  // 128 bits
-    private static final String PBKDF2_ALGORITHM = "PBKDF2WithHmacSHA256";
-    private static final String HMAC_ALGORITHM = "HmacSHA256";
-    private static final int HASH_LENGTH = 32;  // SHA-256 output
-
-    // User attribute names (read by the webhook listener and the ircd)
-    public static final String ATTR_SCRAM_SALT = "scram_sha256_salt";
-    public static final String ATTR_SCRAM_ITERATIONS = "scram_sha256_iterations";
-    public static final String ATTR_SCRAM_STORED_KEY = "scram_sha256_stored_key";
-    public static final String ATTR_SCRAM_SERVER_KEY = "scram_sha256_server_key";
 
     private final KeycloakSession session;
 
@@ -66,97 +37,65 @@ public class ScramPasswordPolicyProvider implements PasswordPolicyProvider {
 
     @Override
     public PolicyError validate(RealmModel realm, UserModel user, String password) {
-        // Always return null (no error) - we're not validating, just generating SCRAM
-        // Generate SCRAM credentials as a side effect of "validation"
-
-        if (password == null || password.isEmpty()) {
+        if (user == null || password == null || password.isEmpty()) {
             return null;
         }
-
         try {
-            generateAndStoreScram(user, password);
-            LOG.infof("Generated SCRAM-SHA-256 credentials for user %s", user.getUsername());
-        } catch (Exception e) {
-            // Don't fail the password change - SCRAM is optional enhancement
-            LOG.warnf("Failed to generate SCRAM credentials for user %s: %s",
-                user.getUsername(), e.getMessage());
+            session.getTransactionManager().enlistPrepare(new StoreWhenPasswordSaved(
+                    realm, user.getId(), IrcScramCredentialProvider.passwordFingerprint(user),
+                    ScramVerifier.deriveRandom(password)));
+        } catch (RuntimeException e) {
+            // Never fail the password change over the verifier; log the class name only.
+            LOG.warnf("SCRAM verifier not derived for user %s: %s", user.getId(), e.getClass().getName());
         }
-
-        return null;  // No policy error - password is valid
-    }
-
-    @Override
-    public PolicyError validate(String user, String password) {
-        // This overload is called when we don't have a UserModel
-        // Can't store attributes without the user, so just pass
         return null;
     }
 
     @Override
+    public PolicyError validate(String user, String password) {
+        return null;   // no user to store a credential for
+    }
+
+    @Override
     public Object parseConfig(String value) {
-        // No configuration needed
         return null;
     }
 
     @Override
     public void close() {
-        // Nothing to close
     }
 
-    /**
-     * Generate SCRAM credentials and store in user attributes.
-     */
-    private void generateAndStoreScram(UserModel user, String password) throws Exception {
-        // Generate random salt
-        byte[] salt = new byte[SALT_LENGTH];
-        new SecureRandom().nextBytes(salt);
+    /** The deferred store: runs in the prepare phase, stores only if the password credentials changed since validation. */
+    private final class StoreWhenPasswordSaved extends AbstractKeycloakTransaction {
 
-        // Derive SaltedPassword using PBKDF2
-        byte[] saltedPassword = pbkdf2(password, salt, SCRAM_ITERATIONS, HASH_LENGTH);
+        private final RealmModel realm;
+        private final String userId;
+        private final String fingerprintBefore;
+        private final ScramVerifier verifier;
 
-        // Compute ClientKey and StoredKey
-        byte[] clientKey = hmacSha256(saltedPassword, "Client Key".getBytes(StandardCharsets.UTF_8));
-        byte[] storedKey = sha256(clientKey);
+        StoreWhenPasswordSaved(RealmModel realm, String userId, String fingerprintBefore, ScramVerifier verifier) {
+            this.realm = realm;
+            this.userId = userId;
+            this.fingerprintBefore = fingerprintBefore;
+            this.verifier = verifier;
+        }
 
-        // Compute ServerKey
-        byte[] serverKey = hmacSha256(saltedPassword, "Server Key".getBytes(StandardCharsets.UTF_8));
+        @Override
+        protected void commitImpl() {
+            try {
+                UserModel user = session.users().getUserById(realm, userId);
+                if (user == null || IrcScramCredentialProvider.passwordFingerprint(user).equals(fingerprintBefore)) {
+                    return;   // the password was not saved
+                }
+                new IrcScramCredentialProvider(session).store(realm, user, verifier);
+            } catch (RuntimeException e) {
+                // A throw here would fail the commit, and with it the password change.
+                LOG.warnf("SCRAM verifier not stored for user %s: %s", userId, e.getClass().getName());
+            }
+        }
 
-        // Store in user attributes
-        user.setSingleAttribute(ATTR_SCRAM_SALT, Base64.getEncoder().encodeToString(salt));
-        user.setSingleAttribute(ATTR_SCRAM_ITERATIONS, String.valueOf(SCRAM_ITERATIONS));
-        user.setSingleAttribute(ATTR_SCRAM_STORED_KEY, Base64.getEncoder().encodeToString(storedKey));
-        user.setSingleAttribute(ATTR_SCRAM_SERVER_KEY, Base64.getEncoder().encodeToString(serverKey));
-    }
-
-    /**
-     * PBKDF2 key derivation.
-     */
-    private byte[] pbkdf2(String password, byte[] salt, int iterations, int keyLength)
-            throws NoSuchAlgorithmException, InvalidKeySpecException {
-        PBEKeySpec spec = new PBEKeySpec(
-            password.toCharArray(),
-            salt,
-            iterations,
-            keyLength * 8  // bits
-        );
-        SecretKeyFactory factory = SecretKeyFactory.getInstance(PBKDF2_ALGORITHM);
-        return factory.generateSecret(spec).getEncoded();
-    }
-
-    /**
-     * HMAC-SHA-256.
-     */
-    private byte[] hmacSha256(byte[] key, byte[] data) throws Exception {
-        Mac mac = Mac.getInstance(HMAC_ALGORITHM);
-        mac.init(new SecretKeySpec(key, HMAC_ALGORITHM));
-        return mac.doFinal(data);
-    }
-
-    /**
-     * SHA-256 hash.
-     */
-    private byte[] sha256(byte[] data) throws NoSuchAlgorithmException {
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        return digest.digest(data);
+        @Override
+        protected void rollbackImpl() {
+        }
     }
 }

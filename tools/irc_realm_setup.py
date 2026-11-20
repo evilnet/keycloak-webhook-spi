@@ -2,9 +2,17 @@
 """Idempotent set-up of a Keycloak realm for the IRC credentials SPI.  Standard library only.
 
     irc_realm_setup.py --url U --realm R --admin-user A --admin-pass-env VAR [--service-client CLIENT]
+                       [--drop-legacy-scram-attributes]
 
 Creates the realm role `irc-read-credentials` that GET /realms/R/irc/credentials/{username}
 requires and, with --service-client, grants it to that client's service account.
+
+Copies the built-in `direct grant` and `browser` flows to `irc direct grant` and `irc browser`,
+puts the `irc-credential-sync` step in each as REQUIRED directly after the password step, and
+binds both copies to the realm.
+
+With --drop-legacy-scram-attributes, also removes the SCRAM verifier user attributes of earlier
+versions (scram_sha256_*, x3_scram_*) from every user and prints how many users it changed.
 """
 import argparse
 import json
@@ -15,6 +23,17 @@ import urllib.parse
 import urllib.request
 
 ROLE = "irc-read-credentials"
+
+SYNC_STEP = "irc-credential-sync"
+# (built-in flow, its copy, the realm's binding for the copy, the password step in it)
+FLOW_COPIES = (
+    ("direct grant", "irc direct grant", "directGrantFlow", "direct-grant-validate-password"),
+    ("browser", "irc browser", "browserFlow", "auth-username-password-form"),
+)
+
+LEGACY_SCRAM_ATTRIBUTES = ("scram_sha256_salt", "scram_sha256_iterations",
+                           "scram_sha256_stored_key", "scram_sha256_server_key")
+LEGACY_SCRAM_PREFIX = "x3_scram_"   # X3's x3_scram_* and x3_scram_sha256_*
 
 
 class Session:
@@ -70,6 +89,110 @@ def ensure_role(session, realm, service_client=None):
             session.request("POST", mappings, [{"id": role["id"], "name": ROLE}])
 
 
+def _q(value):
+    return urllib.parse.quote(value, safe="")
+
+
+def ensure_flows(session, realm):
+    """Copy the direct grant and browser flows, put the sync step after the password step, bind the copies."""
+    r = _q(realm)
+    _, flows = session.request("GET", "/admin/realms/%s/authentication/flows" % r)
+    aliases = {f["alias"] for f in flows}
+    for source, copy, _, password_step in FLOW_COPIES:
+        if copy not in aliases:
+            session.request("POST", "/admin/realms/%s/authentication/flows/%s/copy" % (r, _q(source)),
+                            {"newName": copy})
+        _ensure_step_after(session, r, copy, SYNC_STEP, password_step)
+    _, rep = session.request("GET", "/admin/realms/%s" % r)
+    bindings = {binding: copy for _, copy, binding, _ in FLOW_COPIES if rep.get(binding) != copy}
+    if bindings:
+        session.request("PUT", "/admin/realms/%s" % r, bindings)
+
+
+def _ensure_step_after(session, r, flow, provider, after):
+    """Make `provider` a REQUIRED execution directly after the `after` execution, in the same (sub-)flow."""
+    path = "/admin/realms/%s/authentication/flows/%s/executions" % (r, _q(flow))
+
+    def find():
+        _, executions = session.request("GET", path)
+        anchor = next((e for e in executions if e.get("providerId") == after), None)
+        if anchor is None:
+            raise RuntimeError("flow %r has no %s step" % (flow, after))
+        siblings = _siblings(executions, anchor)
+        return anchor, next((e for e in siblings if e.get("providerId") == provider), None), executions
+
+    anchor, step, executions = find()
+    if step is None:
+        session.request("POST", "/admin/realms/%s/authentication/flows/%s/executions/execution"
+                        % (r, _q(_parent_alias(executions, anchor, flow))), {"provider": provider})
+        anchor, step, _ = find()
+    for _ in range(64):   # each move swaps the step with one neighbour
+        if step["index"] == anchor["index"] + 1:
+            break
+        move = "raise-priority" if step["index"] > anchor["index"] else "lower-priority"
+        session.request("POST", "/admin/realms/%s/authentication/executions/%s/%s" % (r, step["id"], move))
+        anchor, step, _ = find()
+    else:
+        raise RuntimeError("could not place %s after %s in flow %r" % (provider, after, flow))
+    if step["requirement"] != "REQUIRED":
+        session.request("PUT", path, dict(step, requirement="REQUIRED"))
+
+
+def _siblings(executions, anchor):
+    """The executions of the (sub-)flow that holds `anchor`: the listing is depth-first, with levels."""
+    i = executions.index(anchor)
+    level = anchor["level"]
+    start = i
+    while start > 0 and executions[start - 1]["level"] >= level:
+        start -= 1
+    end = i
+    while end + 1 < len(executions) and executions[end + 1]["level"] >= level:
+        end += 1
+    return [e for e in executions[start:end + 1] if e["level"] == level]
+
+
+def _parent_alias(executions, anchor, flow):
+    """The alias of the (sub-)flow that holds `anchor`; a sub-flow is listed under its alias."""
+    if anchor["level"] == 0:
+        return flow
+    i = executions.index(anchor)
+    while executions[i]["level"] >= anchor["level"]:
+        i -= 1
+    return executions[i]["displayName"]
+
+
+def _is_legacy_scram(name):
+    return name in LEGACY_SCRAM_ATTRIBUTES or name.startswith(LEGACY_SCRAM_PREFIX)
+
+
+def drop_legacy_scram_attributes(session, realm, page=100):
+    """Remove the legacy SCRAM verifier attributes from every user; print and return how many users changed."""
+    r = _q(realm)
+    _, profile = session.request("GET", "/admin/realms/%s/users/profile" % r)
+    policy = (profile or {}).get("unmanagedAttributePolicy")
+    if policy not in ("ENABLED", "ADMIN_EDIT"):
+        raise RuntimeError("realm %s: the unmanaged attribute policy is %s; the legacy attributes can be "
+                           "removed only when it is ENABLED or ADMIN_EDIT" % (realm, policy or "off"))
+    changed = 0
+    first = 0
+    while True:
+        _, users = session.request("GET", "/admin/realms/%s/users?briefRepresentation=false&first=%d&max=%d"
+                                   % (r, first, page))
+        if not users:
+            break
+        for listed in users:
+            if not any(_is_legacy_scram(k) for k in (listed.get("attributes") or {})):
+                continue
+            user_path = "/admin/realms/%s/users/%s" % (r, listed["id"])
+            _, user = session.request("GET", user_path)
+            user["attributes"] = {k: v for k, v in (user.get("attributes") or {}).items() if not _is_legacy_scram(k)}
+            session.request("PUT", user_path, user)
+            changed += 1
+        first += len(users)
+    print("removed legacy SCRAM attributes from %d user(s)" % changed)
+    return changed
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--url", required=True)
@@ -77,6 +200,8 @@ def main(argv=None):
     p.add_argument("--admin-user", required=True)
     p.add_argument("--admin-pass-env", required=True, help="name of the environment variable holding the admin password")
     p.add_argument("--service-client", help="client whose service account gets the role")
+    p.add_argument("--drop-legacy-scram-attributes", action="store_true",
+                   help="remove the scram_sha256_* and x3_scram_* user attributes from every user")
     a = p.parse_args(argv)
     password = os.environ.get(a.admin_pass_env)
     if password is None:
@@ -85,6 +210,9 @@ def main(argv=None):
     try:
         session = Session(a.url, login(a.url, a.admin_user, password))
         ensure_role(session, a.realm, a.service_client)
+        ensure_flows(session, a.realm)
+        if a.drop_legacy_scram_attributes:
+            drop_legacy_scram_attributes(session, a.realm)
     except RuntimeError as e:
         print("error: %s" % e, file=sys.stderr)
         return 1

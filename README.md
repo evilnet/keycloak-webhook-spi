@@ -108,8 +108,8 @@ Sent for: UPDATE_CREDENTIAL, REMOVE_CREDENTIAL, UPDATE_PASSWORD, RESET_PASSWORD
 
 User events are forwarded with the event's own fields, mapped onto
 `resourceType`/`operationType` like an admin event; credential-change events
-additionally carry the user's `username` at the root and, when the realm's
-password policy stores them, the SCRAM-SHA-256 verifier attributes.
+additionally carry the user's `username` at the root.  No payload carries the
+SCRAM-SHA-256 verifier: an IRC server reads it from the read endpoint (below).
 
 ```json
 {
@@ -279,6 +279,37 @@ which is idempotent and uses only the Python standard library:
 SETUP_PASS=... tools/irc_realm_setup.py --url https://kc.example --realm myrealm \
     --admin-user admin --admin-pass-env SETUP_PASS --service-client ircd
 ```
+
+## SCRAM verifier
+
+The verifier is a credential of type `irc-scram-sha256` (SHA-256, 4096 iterations, 16-byte
+salt), bound to the password it was derived from.  Keycloak sees a plaintext password at two
+moments, and the verifier is made at both:
+
+- **Password set through Keycloak** (admin reset, account console, required action,
+  registration) when the realm's password policy includes `scramSha256`.  The policy never
+  rejects a password; the verifier is stored when the new password is saved, and nothing is
+  stored when the change fails.
+- **Password login**, by the authenticator `irc-credential-sync` ("IRC credential sync"),
+  placed directly after the password step.  It derives a verifier when the user has none for
+  the current password, or when the stored one is not a verifier of the password just proven
+  (this is what repairs an LDAP-linked user whose password changed in the directory).  It
+  never fails a login, and a login that proved no password changes nothing.
+
+A password loaded pre-hashed through the admin API has no verifier until the user's first
+password login.  An LDAP-linked user has no local password for the verifier to follow, so after
+a password change made in the directory alone the old verifier is still served until the user
+next logs in through Keycloak.
+
+The realm set-up tool also puts `irc-credential-sync` in place: it copies the built-in
+`direct grant` and `browser` flows to `irc direct grant` and `irc browser`, adds the step as
+REQUIRED directly after the password step in each, and binds both copies to the realm.  The
+step is also what makes the account page list the IRC login entry (read-only).
+
+Earlier versions kept the verifier in user attributes (`scram_sha256_*`) and copied it into
+webhook payloads.  Remove those attributes, and X3's `x3_scram_*` ones, from every user with
+`--drop-legacy-scram-attributes` (it prints how many users it changed).  It needs the realm's
+unmanaged attribute policy to let an admin edit them (`ENABLED` or `ADMIN_EDIT`).
 
 ## Development
 
