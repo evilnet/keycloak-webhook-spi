@@ -272,8 +272,9 @@ and the path segment is percent-decoded.  An unknown user is 404 with body
 the user's current password.  The response carries the StoredKey and ServerKey by design;
 the endpoint never logs them.
 
-Create the role (and give it to the IRC server's service account) with the realm set-up tool,
-which is idempotent and uses only the Python standard library:
+Create the role (and give it to the IRC server's service account), and put the login step in
+the realm's flows (see "SCRAM verifier" below), with the realm set-up tool, which is idempotent
+and uses only the Python standard library:
 
 ```bash
 SETUP_PASS=... tools/irc_realm_setup.py --url https://kc.example --realm myrealm \
@@ -288,8 +289,10 @@ moments, and the verifier is made at both:
 
 - **Password set through Keycloak** (admin reset, account console, required action,
   registration) when the realm's password policy includes `scramSha256`.  The policy never
-  rejects a password; the verifier is stored when the new password is saved, and nothing is
-  stored when the change fails.
+  rejects a password.  The verifier is stored once the new password is saved: for a user with
+  a local password, when that password changed; for an LDAP-linked user, when the new password
+  validates against the directory.  Nothing is stored when the change is refused or fails, and
+  an existing verifier stays as it was.
 - **Password login**, by the authenticator `irc-credential-sync` ("IRC credential sync"),
   placed directly after the password step.  It derives a verifier when the user has none for
   the current password, or when the stored one is not a verifier of the password just proven
@@ -299,17 +302,34 @@ moments, and the verifier is made at both:
 A password loaded pre-hashed through the admin API has no verifier until the user's first
 password login.  An LDAP-linked user has no local password for the verifier to follow, so after
 a password change made in the directory alone the old verifier is still served until the user
-next logs in through Keycloak.
+next logs in through Keycloak.  The same holds for a password change made through Keycloak
+when the LDAP provider's "Validate password policy" switch is off (Keycloak's default): the
+change goes to the directory without reaching any password policy, so the verifier is refreshed
+only at the user's next password login.  Turn the switch on to refresh it at once.
 
-The realm set-up tool also puts `irc-credential-sync` in place: it copies the built-in
-`direct grant` and `browser` flows to `irc direct grant` and `irc browser`, adds the step as
-REQUIRED directly after the password step in each, and binds both copies to the realm.  The
-step is also what makes the account page list the IRC login entry (read-only).
+The realm set-up tool also puts `irc-credential-sync` in place: it copies the flows the realm
+has bound for direct grant and browser logins (the built-in ones or custom ones) to
+`irc direct grant` and `irc browser`, adds the step as REQUIRED directly after the password
+step in each, and binds both copies to the realm.  If a bound flow has no password step, the
+tool exits 1 and changes nothing.  The step is also what makes the account page list the IRC
+login entry (read-only).
 
-Earlier versions kept the verifier in user attributes (`scram_sha256_*`) and copied it into
-webhook payloads.  Remove those attributes, and X3's `x3_scram_*` ones, from every user with
-`--drop-legacy-scram-attributes` (it prints how many users it changed).  It needs the realm's
-unmanaged attribute policy to let an admin edit them (`ENABLED` or `ADMIN_EDIT`).
+### Legacy attribute verifiers
+
+Earlier versions kept the verifier in user attributes, and IRC servers deployed before the
+credential still read them: `scram_sha256_{salt,iterations,stored_key,server_key}`, then X3's
+`x3_scram_*` and `x3_scram_sha256_*` with the same suffixes.  The jar never leaves one it knows
+is for a different password:
+
+- a password set through Keycloak removes every legacy attribute when it stores the new
+  verifier;
+- a password login checks each family present against the password just proven and removes the
+  ones that do not match or cannot be read, keeping the ones that match (servers that still read
+  attributes need them).
+
+Run `--drop-legacy-scram-attributes` (it removes those attributes from every user and prints how
+many users it changed) only after every IRC server has stopped reading them.  It needs the
+realm's unmanaged attribute policy to let an admin edit them (`ENABLED` or `ADMIN_EDIT`).
 
 ## Development
 

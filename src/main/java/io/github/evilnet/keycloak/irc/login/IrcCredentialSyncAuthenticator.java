@@ -1,6 +1,7 @@
 package io.github.evilnet.keycloak.irc.login;
 
 import io.github.evilnet.keycloak.irc.scram.IrcScramCredentialProvider;
+import io.github.evilnet.keycloak.irc.scram.LegacyScramAttributes;
 import io.github.evilnet.keycloak.irc.scram.ScramVerifier;
 import java.security.MessageDigest;
 import java.util.Optional;
@@ -19,6 +20,9 @@ import org.keycloak.representations.idm.CredentialRepresentation;
  * verifier in step with the password just proven.  Keycloak sees the plaintext password only
  * at password set and at login; this is the login half (the {@code scramSha256} password
  * policy is the other).
+ *
+ * <p>It also removes each legacy attribute verifier ({@link LegacyScramAttributes}) that is not
+ * a verifier of the password just proven, and keeps the ones that are.</p>
  *
  * <p>It never fails a login: it always ends in {@code success()}, and a request without a
  * {@code password} form parameter (a login that did not prove a password) changes nothing.</p>
@@ -60,6 +64,7 @@ public class IrcCredentialSyncAuthenticator implements Authenticator {
         if (needsNewVerifier(scram.current(user), password)) {
             scram.store(realm, user, ScramVerifier.deriveRandom(password));
         }
+        LegacyScramAttributes.removeStale(user, password);
     }
 
     /**
