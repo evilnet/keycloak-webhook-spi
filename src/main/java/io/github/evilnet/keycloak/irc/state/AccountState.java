@@ -1,8 +1,11 @@
 package io.github.evilnet.keycloak.irc.state;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
 
@@ -55,8 +58,18 @@ public record AccountState(String state, List<String> reasons) {
 
     /** Gathers the inputs from Keycloak and applies {@link #of}. */
     public static AccountState forUser(RealmModel realm, UserModel user) {
+        return forUser(realm, user, List.of());
+    }
+
+    /**
+     * As {@link #forUser(RealmModel, UserModel)}, counting {@code pendingActions} (required actions
+     * a login has added to its authentication session, not stored on the user) as required actions too.
+     */
+    public static AccountState forUser(RealmModel realm, UserModel user, Collection<String> pendingActions) {
+        Set<String> actions = new LinkedHashSet<>(user.getRequiredActionsStream().toList());
+        actions.addAll(pendingActions);
         return of(user.isEnabled(),
-                user.getRequiredActionsStream().toList(),
+                List.copyOf(actions),
                 user.getEmail(),
                 user.isEmailVerified(),
                 Boolean.parseBoolean(realm.getAttribute(ATTR_REQUIRE_EMAIL)),

@@ -8,9 +8,11 @@ Creates the realm role `irc-read-credentials` that GET /realms/R/irc/credentials
 requires and, with --service-client, grants it to that client's service account.
 
 Copies the realm's bound direct-grant and browser flows (whatever they are: the built-in ones
-or custom ones) to `irc direct grant` and `irc browser`, puts the `irc-credential-sync` step in
-each as REQUIRED directly after the password step, and binds both copies to the realm.  If a
-bound flow has no password step, it exits 1 before changing anything.
+or custom ones) to `irc direct grant` and `irc browser`, puts the IRC steps in each as REQUIRED
+directly after the password step (`irc direct grant`: `irc-account-state`, then
+`irc-credential-sync`; `irc browser`: `irc-credential-sync`), and binds both copies to the realm.
+A copy an earlier version set up gets the steps it lacks.  If a bound flow has no password step,
+it exits 1 before changing anything.
 
 With --drop-legacy-scram-attributes, also removes the SCRAM verifier user attributes of earlier
 versions (scram_sha256_*, x3_scram_*) from every user and prints how many users it changed.
@@ -26,10 +28,12 @@ import urllib.request
 ROLE = "irc-read-credentials"
 
 SYNC_STEP = "irc-credential-sync"
-# (the copy, the realm's binding it replaces, the password step it must contain)
+ACCOUNT_STATE_STEP = "irc-account-state"
+# (the copy, the realm's binding it replaces, the password step it must contain,
+#  the steps that follow the password step, in order)
 FLOW_COPIES = (
-    ("irc direct grant", "directGrantFlow", "direct-grant-validate-password"),
-    ("irc browser", "browserFlow", "auth-username-password-form"),
+    ("irc direct grant", "directGrantFlow", "direct-grant-validate-password", (ACCOUNT_STATE_STEP, SYNC_STEP)),
+    ("irc browser", "browserFlow", "auth-username-password-form", (SYNC_STEP,)),
 )
 
 LEGACY_SCRAM_ATTRIBUTES = ("scram_sha256_salt", "scram_sha256_iterations",
@@ -95,13 +99,14 @@ def _q(value):
 
 
 def plan_flows(session, realm):
-    """Check both bindings before anything is written; returns [(copy, binding, password step, flow to copy or None)]."""
+    """Check both bindings before anything is written;
+    returns [(copy, binding, password step, steps after it, flow to copy or None)]."""
     r = _q(realm)
     _, rep = session.request("GET", "/admin/realms/%s" % r)
     _, flows = session.request("GET", "/admin/realms/%s/authentication/flows" % r)
     aliases = {f["alias"] for f in flows}
     plan = []
-    for copy, binding, password_step in FLOW_COPIES:
+    for copy, binding, password_step, steps in FLOW_COPIES:
         bound = rep.get(binding)
         if bound == copy:
             source = None
@@ -114,25 +119,28 @@ def plan_flows(session, realm):
         _, executions = session.request("GET", "/admin/realms/%s/authentication/flows/%s/executions" % (r, _q(checked)))
         if not any(e.get("providerId") == password_step for e in executions):
             raise RuntimeError("flow %r (the realm's %s) has no %s step" % (checked, binding, password_step))
-        plan.append((copy, binding, password_step, source))
+        plan.append((copy, binding, password_step, steps, source))
     return plan
 
 
 def apply_flows(session, realm, plan):
-    """Copy, put the sync step after the password step, and bind, as plan_flows decided."""
+    """Copy, put the IRC steps after the password step in order, and bind, as plan_flows decided."""
     r = _q(realm)
-    for copy, _, password_step, source in plan:
+    for copy, _, password_step, steps, source in plan:
         if source is not None:
             session.request("POST", "/admin/realms/%s/authentication/flows/%s/copy" % (r, _q(source)),
                             {"newName": copy})
-        _ensure_step_after(session, r, copy, SYNC_STEP, password_step)
-    bindings = {binding: copy for copy, binding, _, source in plan if source is not None}
+        after = password_step
+        for step in steps:
+            _ensure_step_after(session, r, copy, step, after)
+            after = step
+    bindings = {binding: copy for copy, binding, _, _, source in plan if source is not None}
     if bindings:
         session.request("PUT", "/admin/realms/%s" % r, bindings)
 
 
 def ensure_flows(session, realm):
-    """Copy the realm's bound direct-grant and browser flows, put the sync step after the password step, bind the copies."""
+    """Copy the realm's bound direct-grant and browser flows, put the IRC steps after the password step, bind the copies."""
     apply_flows(session, realm, plan_flows(session, realm))
 
 

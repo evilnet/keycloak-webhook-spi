@@ -1,1 +1,2 @@
 io.github.evilnet.keycloak.irc.login.IrcCredentialSyncAuthenticatorFactory
+io.github.evilnet.keycloak.irc.login.IrcAccountStateAuthenticatorFactory
