@@ -240,6 +240,44 @@ While written for the Nefarious ircd, this SPI can be used for:
 
 Set `send-all-events=true` and configure multiple webhook targets via comma-separated URLs.
 
+## Account state
+
+An IRC account is reported as `ok`, `incomplete` or `disabled`, with reason codes.
+A disabled user is `disabled` (reasons `["disabled"]`) whatever else is pending.
+Otherwise the reasons, in this order, are: `verify_email`, `update_password`, `configure_totp`,
+`update_profile`, `verify_profile`, `terms_and_conditions` (from the user's stored required
+actions), any other stored action as `action:<alias lowercased>`, `email_missing`, `email_unverified`.
+No reasons means `ok`.
+
+Two realm attributes switch the email rules on (both default `false`):
+`irc.requireEmail` (the user must have an email) and `irc.requireVerifiedEmail`
+(a user with an email must have verified it).
+
+## Read endpoint
+
+`GET /realms/{realm}/irc/credentials/{username}` returns what an IRC server needs for a login.
+The caller sends a bearer token whose realm roles include `irc-read-credentials`:
+no token is 401, a token without the role is 403.  The username is matched case-insensitively
+and the path segment is percent-decoded.  An unknown user is 404 with body
+`{"error": "user_not_found"}`.  The response is sent with `Cache-Control: no-store`.
+
+```json
+{"id": "<uuid>", "username": "alice", "state": "ok", "reasons": [],
+ "scram": {"salt": "<b64>", "iterations": 4096, "storedKey": "<b64>", "serverKey": "<b64>"}}
+```
+
+`scram` is left out when the user has no SCRAM verifier or when the verifier no longer matches
+the user's current password.  The response carries the StoredKey and ServerKey by design;
+the endpoint never logs them.
+
+Create the role (and give it to the IRC server's service account) with the realm set-up tool,
+which is idempotent and uses only the Python standard library:
+
+```bash
+SETUP_PASS=... tools/irc_realm_setup.py --url https://kc.example --realm myrealm \
+    --admin-user admin --admin-pass-env SETUP_PASS --service-client ircd
+```
+
 ## Development
 
 ### Requirements
