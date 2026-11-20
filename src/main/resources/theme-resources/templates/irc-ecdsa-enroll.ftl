@@ -14,7 +14,7 @@
             <div class="${properties.kcFormGroupClass!}">
                 <input type="submit" id="kc-submit" class="${properties.kcButtonClass!} ${properties.kcButtonPrimaryClass!}" value="${msg("doSubmit")}"/>
                 <#if isAppInitiatedAction??>
-                    <button type="submit" id="kc-cancel" class="${properties.kcButtonClass!} ${properties.kcButtonSecondaryClass!} ${properties.kcButtonDefaultClass!}" name="cancel-aia" value="true">${msg("doCancel")}</button>
+                    <button type="submit" id="kc-cancel" class="${properties.kcButtonClass!} ${properties.kcButtonSecondaryClass!} ${properties.kcButtonDefaultClass!}" name="cancel-aia" value="true" formnovalidate>${msg("doCancel")}</button>
                 </#if>
             </div>
         </form>

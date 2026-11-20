@@ -21,6 +21,12 @@ class AccountStateTest {
                 AccountState.of(true, List.of("webauthn-register", "UPDATE_PASSWORD", "VERIFY_EMAIL"), "a@b", true, false, false).reasons());
     }
 
+    @Test void otherActionsAreSortedAfterTheKnownOnes() {
+        List<String> expected = List.of("verify_email", "action:alpha", "action:mid", "action:zeta", "email_unverified");
+        assertEquals(expected, AccountState.of(true, List.of("zeta", "VERIFY_EMAIL", "alpha", "mid"), "a@b", false, false, true).reasons());
+        assertEquals(expected, AccountState.of(true, List.of("mid", "alpha", "zeta", "verify_email"), "a@b", false, false, true).reasons());
+    }
+
     @Test void emailRulesAreOffByDefault() {
         assertEquals("ok", AccountState.of(true, List.of(), null, false, false, false).state());
     }

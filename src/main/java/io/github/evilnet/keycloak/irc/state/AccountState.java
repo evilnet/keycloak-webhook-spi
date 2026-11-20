@@ -39,14 +39,13 @@ public record AccountState(String state, List<String> reasons) {
                 reasons.add(known.toLowerCase(Locale.ROOT));
             }
         }
-        for (String action : requiredActions) {
-            if (KNOWN_ACTIONS.stream().noneMatch(action::equalsIgnoreCase)) {
-                String reason = "action:" + action.toLowerCase(Locale.ROOT);
-                if (!reasons.contains(reason)) {
-                    reasons.add(reason);
-                }
-            }
-        }
+        // Any other action, sorted: the user's actions come in no stable order.
+        requiredActions.stream()
+                .filter(action -> KNOWN_ACTIONS.stream().noneMatch(action::equalsIgnoreCase))
+                .map(action -> "action:" + action.toLowerCase(Locale.ROOT))
+                .distinct()
+                .sorted()
+                .forEach(reasons::add);
         boolean hasEmail = email != null && !email.isBlank();
         if ((requireEmail || requireVerifiedEmail) && !hasEmail) {   // a verified email cannot exist without an email
             reasons.add("email_missing");
