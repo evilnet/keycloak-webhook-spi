@@ -16,10 +16,11 @@ import org.keycloak.models.UserModel;
 import org.keycloak.services.managers.AuthenticationManager;
 
 /**
- * Runs in a direct-grant flow directly after the password step, and refuses an account that is
- * enabled but not fully set up the way Keycloak's password grant would a moment later, with the
- * same {@code error} and {@code error_description}, plus {@code irc_state} and {@code irc_reasons}
- * ({@link AccountState}) so the IRC server can tell the user why.
+ * Runs at the end of a direct-grant flow, after the password step and every other factor the flow
+ * demands (so a password alone never earns a reason when a second factor is due).  It refuses an
+ * account that is enabled but not fully set up the way Keycloak's password grant would a moment
+ * later, with the same {@code error} and {@code error_description}, plus {@code irc_state} and
+ * {@code irc_reasons} ({@link AccountState}) so the IRC server can tell the user why.
  *
  * <p>Before applying the rule it evaluates the realm's required-action triggers for the user, as
  * the password grant does after the flow, so an action Keycloak adds at login (for example

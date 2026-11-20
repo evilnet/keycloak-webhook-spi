@@ -39,7 +39,8 @@ public class IrcCredentialSyncAuthenticatorFactory implements AuthenticatorFacto
 
     @Override
     public String getHelpText() {
-        return "Place directly after the password step. Keeps the user's SCRAM-SHA-256 verifier for IRC logins "
+        return "Place after the password step: last in a direct-grant flow, directly after the password form "
+                + "in a browser flow. Keeps the user's SCRAM-SHA-256 verifier for IRC logins "
                 + "in step with the password just proven. Never fails a login.";
     }
 

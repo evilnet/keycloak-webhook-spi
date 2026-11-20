@@ -8,11 +8,17 @@ Creates the realm role `irc-read-credentials` that GET /realms/R/irc/credentials
 requires and, with --service-client, grants it to that client's service account.
 
 Copies the realm's bound direct-grant and browser flows (whatever they are: the built-in ones
-or custom ones) to `irc direct grant` and `irc browser`, puts the IRC steps in each as REQUIRED
-directly after the password step (`irc direct grant`: `irc-account-state`, then
-`irc-credential-sync`; `irc browser`: `irc-credential-sync`), and binds both copies to the realm.
-A copy an earlier version set up gets the steps it lacks.  If a bound flow has no password step,
-it exits 1 before changing anything.
+or custom ones) to `irc direct grant` and `irc browser`, puts the IRC steps in each as REQUIRED,
+and binds both copies to the realm:
+
+- `irc direct grant`: `irc-account-state`, then `irc-credential-sync`, as the last two top-level
+  executions, after every other step of the flow (the conditional OTP sub-flow included), so they
+  run only once every factor the flow demands is satisfied;
+- `irc browser`: `irc-credential-sync` directly after the username/password form, in the same
+  (sub-)flow, since only that form's request carries the password.
+
+A copy an earlier version set up is brought to this layout.  If a bound flow has no password
+step, it exits 1 before changing anything.
 
 With --drop-legacy-scram-attributes, also removes the SCRAM verifier user attributes of earlier
 versions (scram_sha256_*, x3_scram_*) from every user and prints how many users it changed.
@@ -29,11 +35,13 @@ ROLE = "irc-read-credentials"
 
 SYNC_STEP = "irc-credential-sync"
 ACCOUNT_STATE_STEP = "irc-account-state"
-# (the copy, the realm's binding it replaces, the password step it must contain,
-#  the steps that follow the password step, in order)
+# Where a copy's IRC steps go: the last top-level executions, or directly after the password step.
+LAST = "last"
+AFTER_PASSWORD = "after-password"
+# (the copy, the realm's binding it replaces, the password step it must contain, placement, the steps in order)
 FLOW_COPIES = (
-    ("irc direct grant", "directGrantFlow", "direct-grant-validate-password", (ACCOUNT_STATE_STEP, SYNC_STEP)),
-    ("irc browser", "browserFlow", "auth-username-password-form", (SYNC_STEP,)),
+    ("irc direct grant", "directGrantFlow", "direct-grant-validate-password", LAST, (ACCOUNT_STATE_STEP, SYNC_STEP)),
+    ("irc browser", "browserFlow", "auth-username-password-form", AFTER_PASSWORD, (SYNC_STEP,)),
 )
 
 LEGACY_SCRAM_ATTRIBUTES = ("scram_sha256_salt", "scram_sha256_iterations",
@@ -100,13 +108,13 @@ def _q(value):
 
 def plan_flows(session, realm):
     """Check both bindings before anything is written;
-    returns [(copy, binding, password step, steps after it, flow to copy or None)]."""
+    returns [(copy, binding, password step, placement, steps, flow to copy or None)]."""
     r = _q(realm)
     _, rep = session.request("GET", "/admin/realms/%s" % r)
     _, flows = session.request("GET", "/admin/realms/%s/authentication/flows" % r)
     aliases = {f["alias"] for f in flows}
     plan = []
-    for copy, binding, password_step, steps in FLOW_COPIES:
+    for copy, binding, password_step, placement, steps in FLOW_COPIES:
         bound = rep.get(binding)
         if bound == copy:
             source = None
@@ -119,28 +127,31 @@ def plan_flows(session, realm):
         _, executions = session.request("GET", "/admin/realms/%s/authentication/flows/%s/executions" % (r, _q(checked)))
         if not any(e.get("providerId") == password_step for e in executions):
             raise RuntimeError("flow %r (the realm's %s) has no %s step" % (checked, binding, password_step))
-        plan.append((copy, binding, password_step, steps, source))
+        plan.append((copy, binding, password_step, placement, steps, source))
     return plan
 
 
 def apply_flows(session, realm, plan):
-    """Copy, put the IRC steps after the password step in order, and bind, as plan_flows decided."""
+    """Copy, put the IRC steps in place, and bind, as plan_flows decided."""
     r = _q(realm)
-    for copy, _, password_step, steps, source in plan:
+    for copy, _, password_step, placement, steps, source in plan:
         if source is not None:
             session.request("POST", "/admin/realms/%s/authentication/flows/%s/copy" % (r, _q(source)),
                             {"newName": copy})
-        after = password_step
-        for step in steps:
-            _ensure_step_after(session, r, copy, step, after)
-            after = step
-    bindings = {binding: copy for copy, binding, _, _, source in plan if source is not None}
+        if placement == LAST:
+            _ensure_steps_last(session, r, copy, steps)
+        else:
+            after = password_step
+            for step in steps:
+                _ensure_step_after(session, r, copy, step, after)
+                after = step
+    bindings = {binding: copy for copy, binding, _, _, _, source in plan if source is not None}
     if bindings:
         session.request("PUT", "/admin/realms/%s" % r, bindings)
 
 
 def ensure_flows(session, realm):
-    """Copy the realm's bound direct-grant and browser flows, put the IRC steps after the password step, bind the copies."""
+    """Copy the realm's bound direct-grant and browser flows, put the IRC steps in place, bind the copies."""
     apply_flows(session, realm, plan_flows(session, realm))
 
 
@@ -171,6 +182,44 @@ def _ensure_step_after(session, r, flow, provider, after):
         raise RuntimeError("could not place %s after %s in flow %r" % (provider, after, flow))
     if step["requirement"] != "REQUIRED":
         session.request("PUT", path, dict(step, requirement="REQUIRED"))
+
+
+def _ensure_steps_last(session, r, flow, providers):
+    """Make `providers` REQUIRED executions of `flow`, each once, as its last top-level executions, in this order.
+
+    One inside a sub-flow (where an earlier version put it after a nested password step) is removed.
+    """
+    path = "/admin/realms/%s/authentication/flows/%s/executions" % (r, _q(flow))
+
+    def top():
+        _, executions = session.request("GET", path)
+        return executions, [e for e in executions if e["level"] == 0]
+
+    executions, level0 = top()
+    nested = [e for e in executions if e.get("providerId") in providers and e["level"] != 0]
+    missing = [p for p in providers if not any(e.get("providerId") == p for e in level0)]
+    for e in nested:
+        session.request("DELETE", "/admin/realms/%s/authentication/executions/%s" % (r, e["id"]))
+    for provider in missing:   # a new execution is appended at the end of the flow
+        session.request("POST", "%s/execution" % path, {"provider": provider})
+    if nested or missing:
+        executions, level0 = top()
+    # Last provider first: once it is last, moving an earlier one down never passes it.
+    for offset, provider in enumerate(reversed(providers), start=1):
+        for _ in range(64):   # each move swaps the step with one neighbour
+            step = next(e for e in level0 if e.get("providerId") == provider)
+            target = len(level0) - offset
+            position = level0.index(step)
+            if position == target:
+                break
+            move = "lower-priority" if position < target else "raise-priority"
+            session.request("POST", "/admin/realms/%s/authentication/executions/%s/%s" % (r, step["id"], move))
+            executions, level0 = top()
+        else:
+            raise RuntimeError("could not place %s last in flow %r" % (provider, flow))
+        if step["requirement"] != "REQUIRED":
+            session.request("PUT", path, dict(step, requirement="REQUIRED"))
+            executions, level0 = top()
 
 
 def _siblings(executions, anchor):

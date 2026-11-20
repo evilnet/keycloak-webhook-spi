@@ -286,9 +286,8 @@ SETUP_PASS=... tools/irc_realm_setup.py --url https://kc.example --realm myrealm
 
 Keycloak refuses the password grant of an enabled account with pending required actions with
 HTTP 400 and one fixed message, whatever is pending.  The authenticator `irc-account-state`
-("IRC account state"), placed in the direct-grant flow directly after the password step, refuses
-such an account itself, with Keycloak's own two fields and the account state (see "Account
-state" above):
+("IRC account state"), placed at the end of the direct-grant flow, refuses such an account
+itself, with Keycloak's own two fields and the account state (see "Account state" above):
 
 ```json
 {"error": "invalid_grant", "error_description": "Account is not fully set up",
@@ -298,8 +297,12 @@ state" above):
 `error` and `error_description` are exactly Keycloak's, so an IRC server that does not know the
 two new fields behaves as before.  `irc_reasons` is in the order "Account state" gives.
 
-- It runs only after the password step, so a wrong password gets Keycloak's
-  `Invalid user credentials` and no reason.
+- It runs only once every factor the flow demands is satisfied, at the point where Keycloak
+  applies its own required-action check.  A wrong password gets Keycloak's
+  `Invalid user credentials` and no reason.  An account with a second factor (OTP) gets
+  Keycloak's own answer until that factor is supplied: the right password without the code is
+  refused exactly as a wrong password is, with no reason; the reasons come only with the
+  password and a valid code.
 - A disabled account is refused before the password step by Keycloak's own username step
   (`Account disabled`), with or without the right password; that is unchanged and carries no
   `irc_*` fields.
@@ -312,10 +315,12 @@ two new fields behaves as before.  `irc_reasons` is in the order "Account state"
   like Keycloak's own refusal it does not count as a failed login for brute-force detection.
 - A complete account gets its token as before.
 
-The realm set-up tool puts the step in `irc direct grant`, REQUIRED, between the password step
-and `irc-credential-sync` (so an account refused here does not reach the verifier sync).  It is
-not put in `irc browser`: a browser login shows Keycloak's own required-action screens.  A realm
-an earlier version of the tool set up gets the step on the next run.
+The realm set-up tool makes `irc-account-state` and then `irc-credential-sync` the last two
+top-level steps of `irc direct grant`, REQUIRED, after every other step of the flow (the
+conditional OTP sub-flow, and anything a custom flow adds), so an account refused here does not
+reach the verifier sync.  The step is not put in `irc browser`: a browser login shows Keycloak's
+own required-action screens.  A realm an earlier version of the tool set up is brought to this
+layout on the next run.
 
 ## SCRAM verifier
 
@@ -329,8 +334,10 @@ moments, and the verifier is made at both:
   a local password, when that password changed; for an LDAP-linked user, when the new password
   validates against the directory.  Nothing is stored when the change is refused or fails, and
   an existing verifier stays as it was.
-- **Password login**, by the authenticator `irc-credential-sync` ("IRC credential sync"),
-  placed after the password step.  It derives a verifier when the user has none for
+- **Password login**, by the authenticator `irc-credential-sync` ("IRC credential sync"):
+  last in the direct-grant flow (after any second factor, so it runs only for a complete
+  login), and directly after the username/password form in the browser flow (only that form's
+  request carries the password).  It derives a verifier when the user has none for
   the current password, or when the stored one is not a verifier of the password just proven
   (this is what repairs an LDAP-linked user whose password changed in the directory).  It
   never fails a login, and a login that proved no password changes nothing.
@@ -345,8 +352,9 @@ only at the user's next password login.  Turn the switch on to refresh it at onc
 
 The realm set-up tool also puts `irc-credential-sync` in place: it copies the flows the realm
 has bound for direct grant and browser logins (the built-in ones or custom ones) to
-`irc direct grant` and `irc browser`, adds the step as REQUIRED after the password step in each
-(in `irc direct grant`, after `irc-account-state`), and binds both copies to the realm.  If a
+`irc direct grant` and `irc browser`, adds the step as REQUIRED (in `irc direct grant` last,
+after `irc-account-state`; in `irc browser` directly after the username/password form, in the
+same sub-flow), and binds both copies to the realm.  If a
 bound flow has no password step, the tool exits 1 and changes nothing.  The step is also what
 makes the account page list the IRC login entry (read-only).
 

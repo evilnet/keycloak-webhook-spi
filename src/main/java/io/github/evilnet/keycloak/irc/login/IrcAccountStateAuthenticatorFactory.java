@@ -34,7 +34,7 @@ public class IrcAccountStateAuthenticatorFactory implements AuthenticatorFactory
 
     @Override
     public String getHelpText() {
-        return "Direct grant only; place directly after the password step. Refuses an account that is not fully "
+        return "Direct grant only; place last, after the password step and every other factor. Refuses an account that is not fully "
                 + "set up as Keycloak would, adding irc_state and irc_reasons to the error response.";
     }
 
