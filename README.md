@@ -19,7 +19,7 @@ an LDAP directory can be retired.  Each piece, with its id and the section that 
 | Required action for adding an ECDSA key from the account page | `irc-ecdsa-enroll` | ECDSA keys |
 | TLS client certificate credential type, one per certificate | `irc-certfp` | Certificates |
 | Event listener keeping the user attribute `x509_fingerprints` equal to the certificate credentials | `irc-certfp-mirror` | Certificates |
-| Realm resource `irc`: `GET /realms/{realm}/irc/credentials/{username}` (role `irc-read-credentials`) and `PUT`/`GET`/`DELETE /realms/{realm}/irc/certfp/{username}[/{sha512}]` (role `irc-manage-certfp`) | `irc`, roles `irc-read-credentials`, `irc-manage-certfp` | Read endpoint, Certificates |
+| Realm resource `irc`: `GET /realms/{realm}/irc/credentials/{username}` (role `irc-read-credentials`), and `PUT`/`GET /realms/{realm}/irc/certfp/{username}` and `DELETE /realms/{realm}/irc/certfp/{username}/{sha512}` (role `irc-manage-certfp`) | `irc`, roles `irc-read-credentials`, `irc-manage-certfp` | Read endpoint, Certificates |
 | Realm set-up tool (roles, login flows, required action, User Profile declaration, listener) | `tools/irc_realm_setup.py` | Read endpoint, SCRAM verifier, ECDSA keys, Certificates |
 | Tool loading `{MD5}` and `{SSHA}` hashes from an LDIF export | `tools/import_ldap_hashes.py` | Loading LDAP password hashes |
 
@@ -32,8 +32,8 @@ The jar changes how a realm behaves as soon as it is live, so do these in this o
    `irc-certfp` credentials.  A value with no credential behind it is overwritten at that user's
    next certificate add or removal.  Enrol such certificates as credentials first (see
    "Certificates").
-2. **Install the jar and set the realm up.**  Copy the jar to `providers/` and restart Keycloak
-   (see "Deploy").  Add `scramSha256` to the realm's password policy.  Then run
+2. **Install the jar and set the realm up.**  Copy the jar to `providers/`, run `kc.sh build` and
+   restart Keycloak (see "Deploy").  Add `scramSha256` to the realm's password policy.  Then run
    `tools/irc_realm_setup.py` for the realm (see "Read endpoint" for the command).  It creates the
    roles `irc-read-credentials` and `irc-manage-certfp` and grants both to the service client given
    with `--service-client`; copies the flows the realm has bound for direct grant and browser logins
@@ -56,11 +56,18 @@ The jar changes how a realm behaves as soon as it is live, so do these in this o
    users.  This is work on the IRC server and is not part of this jar.
 6. **Only after every IRC server has stopped reading the old attributes:** run
    `tools/irc_realm_setup.py ... --drop-legacy-scram-attributes`.  It removes them from every user
-   and prints how many users it changed.
-7. **Before the LDAP directory is unlinked:** take the census of hash schemes in the directory (the
-   `ldapsearch` command under "Loading LDAP password hashes"), run `tools/import_ldap_hashes.py` as
-   a dry run, then again with `--apply`.  Only `{MD5}` and `{SSHA}` hashes are loaded; other schemes
-   are reported as `unsupported:<scheme>` and not loaded.
+   and prints how many users it changed.  It needs the realm's unmanaged-attribute policy to be
+   `ENABLED` or `ADMIN_EDIT` (see "Legacy attribute verifiers").
+7. **Retiring the LDAP directory, in one maintenance window:** take the census of hash schemes in
+   the directory (the `ldapsearch` command under "Loading LDAP password hashes"); block password
+   changes (in the IRC services and in Keycloak); take the LDIF export; unlink the users from the
+   LDAP provider (Keycloak's "Unlink users", which keeps the accounts and their ids and drops their
+   LDAP passwords) and remove the provider; then run `tools/import_ldap_hashes.py` as a dry run, and
+   again with `--apply`.  From the unlink until the load finishes, password logins fail.  Only
+   `{MD5}` and `{SSHA}` hashes are loaded; other schemes are reported as `unsupported:<scheme>` and
+   not loaded.  After the load, a user's SCRAM verifier is not served again until that user's next
+   password login (so a client that only does SCRAM must log in once with PLAIN).  See "Loading LDAP
+   password hashes".
 
 ## Features
 
@@ -244,7 +251,12 @@ user (the user id is kept):
 ```
 
 A password that contains non-ASCII characters may have been hashed from its
-ISO-8859-1 or its UTF-8 bytes, so both are tried.  The providers never produce
+ISO-8859-1 or its UTF-8 bytes, so both are tried; the ISO-8859-1 attempt is made only
+when every character typed is in ISO-8859-1 (a character outside it would otherwise
+stand in for `?`).  That attempt covers a password typed in a UTF-8 client: Keycloak
+decodes the grant's form as UTF-8, so a client that sends the password as raw Latin-1
+bytes is refused, and it is the IRC server's job to transcode such a password to UTF-8
+before the grant.  The providers never produce
 hashes: after the first successful login Keycloak re-hashes the password to the
 realm's hashing policy, and the legacy hash is gone.
 
@@ -264,11 +276,30 @@ tools/import_ldap_hashes.py ... --apply                          # loads the has
 
 **Run it without `--apply` first**: it then only reports what it would do.  The users must
 already exist in Keycloak (the lookup is by exact user name; `--uid-attr` names another LDIF
-attribute than `uid`).  It prints one line per outcome with its count, never a hash:
+attribute than `uid`).
+
+**Run it in the maintenance window of "Deployment order", step 7, after the users are unlinked:**
+block password changes (IRC services and Keycloak), take the LDIF export, unlink the users from the
+LDAP provider (Keycloak's "Unlink users": the accounts and their ids stay, their LDAP passwords go)
+and remove the provider, then run the tool as a dry run and with `--apply`.  Until the load
+finishes, password logins fail.  After it, the original passwords log in, and a user's SCRAM
+verifier is not served again until that user's next password login (the loaded hash changes the
+password the verifier is bound to), so a client that only does SCRAM must log in once with PLAIN.
+
+A user still linked to a user-storage provider is not loaded: it is reported `linked`.
+`--allow-linked` loads such users anyway, which freezes their passwords, because Keycloak asks
+the directory only about a user who has no local password: a password changed in the directory is
+then refused and the old one still logs in; a password reset through Keycloak answers 204, yet the
+new password is refused and the old one still logs in; a later run reports
+`already-has-password`, so it cannot refresh the hash; and the user's SCRAM verifier is not served
+until their next password login.
+
+It prints one line per outcome with its count, never a hash:
 
 | Outcome | Meaning |
 |---|---|
 | `loaded` (`would-load` without `--apply`) | the hash was loaded |
+| `linked` | the user is still linked to a user-storage provider (LDAP); not loaded unless `--allow-linked` |
 | `already-has-password` | the user has a password credential; left alone, so a second run loads nothing |
 | `no-such-user` | no Keycloak user of that name |
 | `no-password` | the entry has no `userPassword` |
@@ -276,8 +307,11 @@ attribute than `uid`).  It prints one line per outcome with its count, never a h
 | `failed` | the admin API refused that user; the reason is printed on standard error by user name, and the run goes on |
 
 Exit status: 0 when no user failed, 1 when at least one did, 2 on a usage error or when
-the admin login or the connection fails.  The admin password comes from the environment
-variable named by `--admin-pass-env`, never the command line.
+the admin login or the connection fails (a connection lost part-way first prints the counts of
+what was done until then).  The admin password comes from the environment
+variable named by `--admin-pass-env`, never the command line.  Both tools log in again during a
+long run (before the admin token expires, or when a request answers 401), so a large file is
+not cut off by the master realm's token lifespan (60 s by default).
 
 To see which schemes the directory holds before exporting (this prints scheme names and
 counts only, no hashes; `{CRYPT}` and other schemes the tool reports as unsupported show up
@@ -296,7 +330,7 @@ ldapsearch -x -LLL -o ldif-wrap=no -H ldap://HOST -D 'ADMIN_DN' -W -b 'USERS_BAS
 ### Custom Keycloak Image
 
 ```dockerfile
-FROM quay.io/keycloak/keycloak:26.0.0
+FROM quay.io/keycloak/keycloak:26.4.7
 
 COPY keycloak-webhook-spi-1.0.0-SNAPSHOT.jar /opt/keycloak/providers/
 
@@ -317,7 +351,7 @@ services:
              cp target/*.jar /providers/"
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.0.0
+    image: quay.io/keycloak/keycloak:26.4.7
     depends_on:
       keycloak-spi-build:
         condition: service_completed_successfully
@@ -349,7 +383,7 @@ An IRC account is reported as `ok`, `incomplete` or `disabled`, with reason code
 A disabled user is `disabled` (reasons `["disabled"]`) whatever else is pending.
 Otherwise the reasons, in this order, are: `verify_email`, `update_password`, `configure_totp`,
 `update_profile`, `verify_profile`, `terms_and_conditions` (from the user's stored required
-actions), any other stored action as `action:<alias lowercased>`, `email_missing`, `email_unverified`.
+actions), any other stored action as `action:<alias lowercased>` (sorted), `email_missing`, `email_unverified`.
 No reasons means `ok`.
 
 Two realm attributes switch the email rules on (both default `false`):
@@ -357,6 +391,8 @@ Two realm attributes switch the email rules on (both default `false`):
 (the user must have a verified email).  A user with no email (null or empty) gets
 `email_missing` when either is on; a user with an unverified email gets `email_unverified`
 when `irc.requireVerifiedEmail` is on.  The two email reasons never appear together.
+Both attributes apply to every client of the realm that uses the password grant (the realm's
+direct-grant flow is `irc direct grant`), not only to IRC.
 
 ## Read endpoint
 
@@ -447,7 +483,9 @@ moments, and the verifier is made at both:
   request carries the password).  It derives a verifier when the user has none for
   the current password, or when the stored one is not a verifier of the password just proven
   (this is what repairs an LDAP-linked user whose password changed in the directory).  It
-  never fails a login, and a login that proved no password changes nothing.
+  never fails a login, and a login that proved no password changes nothing.  The verifier is
+  written after the login's transaction has committed, and only once the password just proven is
+  checked again and is still the user's: a login racing a password change stores nothing.
 
 A password loaded pre-hashed through the admin API has no verifier until the user's first
 password login.  An LDAP-linked user has no local password for the verifier to follow, so after
@@ -463,7 +501,13 @@ has bound for direct grant and browser logins (the built-in ones or custom ones)
 after `irc-account-state`; in `irc browser` directly after the username/password form, in the
 same sub-flow), and binds both copies to the realm.  If a
 bound flow has no password step, the tool exits 1 and changes nothing.  The step is also what
-makes the account page list the IRC login entry (read-only).
+makes the account page list the IRC login entry (read-only).  The copies are copies: they do not
+follow later edits to the flows they were copied from, nor the changes a Keycloak upgrade migrates
+into the built-in flows.
+
+IRC logins by SCRAM, ECDSA key or certificate never involve a second factor: the IRC server checks
+them itself against what the read endpoint returns.  In the browser flow the verifier is derived
+when the username/password form succeeds, before any second factor is asked for.
 
 ### Legacy attribute verifiers
 
@@ -476,7 +520,8 @@ is for a different password:
   verifier;
 - a password login checks each family present against the password just proven and removes the
   ones that do not match or cannot be read, keeping the ones that match (servers that still read
-  attributes need them).
+  attributes need them); when that password is no longer the user's by then (a password change
+  committed after the login), it removes nothing.
 
 The removal runs after the verifier is stored, in a transaction of its own, so a failed removal
 never undoes or prevents the verifier or the password change.  It writes to Keycloak's own
@@ -485,7 +530,9 @@ provider.
 
 Run `--drop-legacy-scram-attributes` (it removes those attributes from every user and prints how
 many users it changed) only after every IRC server has stopped reading them.  It needs the
-realm's unmanaged attribute policy to let an admin edit them (`ENABLED` or `ADMIN_EDIT`).
+realm's unmanaged attribute policy to let an admin edit them (`ENABLED` or `ADMIN_EDIT`).  A user
+the admin API refuses is reported on standard error by name and counted; the run goes on, prints
+how many users failed, and the tool exits 1.
 
 ## ECDSA keys
 
@@ -512,6 +559,9 @@ a key.
 - **An admin** can load a key through the admin API as a credential
   (`{"type": "irc-ecdsa-pubkey", "credentialData": "{\"publicKey\": \"...\"}"}`, any accepted
   form); a value that is not accepted is answered 400 and leaves the user's key as it was.
+
+Changing the password does not revoke the key: it stays valid across a password change until it
+is removed or replaced.
 
 The realm set-up tool registers `irc-ecdsa-enroll` and enables it (it is not a default action, so
 no user is asked for a key at login).  The account page lists the type only because
@@ -542,6 +592,15 @@ unknown user is 404 `{"error": "user_not_found"}`; replies are sent with `Cache-
   (also for a value that is not a well-formed SHA-512).
 - `GET /realms/{realm}/irc/certfp/{username}`:
   `{"certificates": [{"sha512": "...", "sha256": "...", "name": "...", "createdDate": <ms>}]}`, oldest first.
+
+A reply carries a certificate's `name` only when it passes the name rule above; otherwise it carries
+the fixed placeholder `(invalid name)`.  Keycloak's own label routes (the account REST API's
+`PUT .../account/credentials/{id}/label` and the admin API's `userLabel` route) store any name, and an
+IRC server may put the name on a line.
+
+The role `irc-manage-certfp` lets its holder attach a certificate to any account, which amounts to
+logging in as any user by certificate, so it belongs only to the IRC servers' service account.
+A certificate stays valid across a password change: changing the password does not revoke it.
 
 An admin can also load one through the admin API as a credential
 (`{"type": "irc-certfp", "userLabel": "<name>", "credentialData": "{\"sha256\": ..., \"sha512\": ...}"}`);
@@ -587,7 +646,8 @@ Keycloak's own user storage, so it also works for a user linked to a READ_ONLY L
   credential behind it on another user blocks the real owner with 409 until it is cleared.
 - There is no unique constraint behind that check: two adds of the same certificate at the same
   moment (by two users, or twice by one) can both succeed, so an IRC server must refuse a lookup
-  that finds two users.
+  that finds two users.  A certificate one user holds twice is listed once (under its oldest
+  credential's name), and a removal through the IRC endpoint removes every copy.
 
 The set-up tool creates `irc-manage-certfp` beside `irc-read-credentials` (and grants both to
 `--service-client`), declares `x509_fingerprints` in the realm's User Profile (multivalued, view
