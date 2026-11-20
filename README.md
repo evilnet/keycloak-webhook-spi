@@ -188,6 +188,49 @@ ISO-8859-1 or its UTF-8 bytes, so both are tried.  The providers never produce
 hashes: after the first successful login Keycloak re-hashes the password to the
 realm's hashing policy, and the legacy hash is gone.
 
+### Loading LDAP password hashes
+
+`tools/import_ldap_hashes.py` (standard library only, Python 3.9+) reads an LDIF export of
+the directory and loads each user's `{MD5}` or `{SSHA}` hash into the Keycloak user of the
+same name through the admin API, in the form above.  Export the users with `ldapsearch -LLL`
+(its `userPassword::` base64 lines and plain `userPassword:` lines are both read), then:
+
+```bash
+export KC_ADMIN_PASS=...
+tools/import_ldap_hashes.py --ldif users.ldif --url https://kc.example --realm myrealm \
+    --admin-user admin --admin-pass-env KC_ADMIN_PASS            # dry run: changes nothing
+tools/import_ldap_hashes.py ... --apply                          # loads the hashes
+```
+
+**Run it without `--apply` first**: it then only reports what it would do.  The users must
+already exist in Keycloak (the lookup is by exact user name; `--uid-attr` names another LDIF
+attribute than `uid`).  It prints one line per outcome with its count, never a hash:
+
+| Outcome | Meaning |
+|---|---|
+| `loaded` (`would-load` without `--apply`) | the hash was loaded |
+| `already-has-password` | the user has a password credential; left alone, so a second run loads nothing |
+| `no-such-user` | no Keycloak user of that name |
+| `no-password` | the entry has no `userPassword` |
+| `unsupported:<scheme>` | another scheme (`{CRYPT}`, ...), no scheme prefix, a `{MD5}`/`{SSHA}` value that is not a valid hash (`unsupported:{MD5}(malformed)`), or several values (`unsupported:(several values)`); not loaded |
+| `failed` | the admin API refused that user; the reason is printed on standard error by user name, and the run goes on |
+
+Exit status: 0 when no user failed, 1 when at least one did, 2 on a usage error or when
+the admin login or the connection fails.  The admin password comes from the environment
+variable named by `--admin-pass-env`, never the command line.
+
+To see which schemes the directory holds before exporting (this prints scheme names and
+counts only, no hashes; `{CRYPT}` and other schemes the tool reports as unsupported show up
+here):
+
+```bash
+ldapsearch -x -LLL -o ldif-wrap=no -H ldap://HOST -D 'ADMIN_DN' -W -b 'USERS_BASE' \
+  '(userPassword=*)' userPassword \
+| awk '/^userPassword:: /{cmd="echo " $2 " | base64 -d"; cmd | getline v; close(cmd); print v}
+       /^userPassword: /{print $2}' \
+| sed -E 's/^(\{[^}]+\}).*/\1/; t; s/.*/(no scheme prefix)/' | sort | uniq -c
+```
+
 ## Docker Integration
 
 ### Custom Keycloak Image
