@@ -25,8 +25,9 @@ Registers and enables the required action `irc-ecdsa-enroll` (not a default acti
 a user adds an ECDSA key from the account page.
 
 Declares the user attribute `x509_fingerprints` in the realm's User Profile (multivalued, seen by
-the user and admins, edited by admins only); it is the index the irc-certfp credentials keep, and
-the ircd searches it for a certificate login.  Adds the event listener `irc-certfp-mirror` to the
+the user and admins, edited by nobody: only the irc-certfp credentials write it); it is the index
+those credentials keep, and the ircd searches it for a certificate login.  A declaration an earlier
+version made (edit for admins) is corrected.  Adds the event listener `irc-certfp-mirror` to the
 realm's event listeners, keeping the others; it keeps the attribute right when a certificate is
 removed on the account page or through the admin API.
 
@@ -64,7 +65,7 @@ ECDSA_ENROLL_NAME = "IRC: add an ECDSA key"
 CERTFP_ATTRIBUTE = "x509_fingerprints"
 CERTFP_DISPLAY_NAME = "IRC certificate fingerprints (SHA-256)"
 CERTFP_VIEW = ("admin", "user")
-CERTFP_EDIT = ("admin",)
+CERTFP_EDIT = ()   # nobody: an admin-API user update must not be able to erase or type the index
 CERTFP_LISTENER = "irc-certfp-mirror"
 
 LEGACY_SCRAM_ATTRIBUTES = ("scram_sha256_salt", "scram_sha256_iterations",
@@ -144,7 +145,7 @@ def ensure_required_action(session, realm):
 
 
 def ensure_certfp_attribute(session, realm):
-    """Declare x509_fingerprints in the User Profile: multivalued, view for user and admin, edit for admin only.
+    """Declare x509_fingerprints in the User Profile: multivalued, view for user and admin, edit for nobody.
 
     The rest of the profile is sent back as it was read; nothing is sent when the declaration is already so.
     Other settings of an existing declaration (display name, validations, annotations) are kept.

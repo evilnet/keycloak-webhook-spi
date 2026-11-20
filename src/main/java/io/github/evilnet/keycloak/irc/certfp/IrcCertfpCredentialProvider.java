@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import jakarta.ws.rs.core.Response;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -195,7 +196,8 @@ public class IrcCertfpCredentialProvider implements CredentialProvider<Credentia
 
     /**
      * Rewrites the user's {@value #ATTRIBUTE} to exactly the SHA-256 values of their certificates, when it
-     * differs.  Values with no certificate behind them are dropped.  Writes through Keycloak's local
+     * differs ({@link #sameValues}: the stored values have no defined order).  Values with no certificate
+     * behind them are dropped.  Writes through Keycloak's local
      * (database) user model and then evicts the user from the cache: the federated model of a READ_ONLY
      * LDAP provider refuses every attribute write ({@code ReadOnlyException}), while the attribute lives in
      * Keycloak's own database for an imported LDAP user as for any other.  A user with no local record (an
@@ -211,7 +213,7 @@ public class IrcCertfpCredentialProvider implements CredentialProvider<Credentia
         }
         List<String> want = new IrcCertfpCredentialProvider(session).sha256s(user);
         List<String> have = user.getAttributeStream(ATTRIBUTE).toList();
-        if (want.equals(have)) {
+        if (sameValues(want, have)) {
             return false;
         }
         if (want.isEmpty()) {
@@ -224,6 +226,11 @@ public class IrcCertfpCredentialProvider implements CredentialProvider<Credentia
             cache.evict(realm, local);
         }
         return true;
+    }
+
+    /** True when {@code stored} holds exactly the values of {@code wanted} (distinct), in any order and each once. */
+    static boolean sameValues(List<String> wanted, List<String> stored) {
+        return wanted.size() == stored.size() && new HashSet<>(wanted).equals(new HashSet<>(stored));
     }
 
     /** True when a user of the realm other than {@code user} has {@code sha256} in {@value #ATTRIBUTE}. */

@@ -464,24 +464,32 @@ Keycloak's own user storage, so it also works for a user linked to a READ_ONLY L
   rewrite fails it marks the transaction for rollback, so the removal is undone; the page may still
   report success.  The set-up tool adds the listener to the realm's event listeners, keeping the
   others, and **it must stay enabled**: without it those removals leave the removed certificate's
-  SHA-256 in the attribute until the user's next add or removal through the IRC endpoint.
+  SHA-256 in the attribute.
+- A stale value lasts until a certificate is actually added or removed for that user (or, with the
+  listener enabled, any credential of theirs is removed); a repeated or refused add does not rewrite
+  the attribute.
 - **An IRC server must check `certFingerprints` in the read endpoint**, which is computed from the
   credentials, never from the attribute: accept a certificate login only when the presented SHA-256
-  is in that list.  A value that is ever stale in the attribute then fails closed.
+  is in that list.  For a server that does, a value that is ever stale in the attribute fails
+  closed; a server that only searches the attribute does not get that protection.
 - **Values already in the attribute are overwritten**, including values with no credential behind
   them: the attribute is derived, never typed.  Before deploying, check for existing
   `x509_fingerprints` values (for example certificates set by hand) and enrol them as credentials,
   or they disappear at that user's next credential change.
-- Users cannot edit it (the account REST API refuses with `error-user-attribute-read-only`); they
-  can see it.  Admins can edit it, as the User Profile declaration below says, but a value an admin
-  types is overwritten at the next change and never appears in `certFingerprints`.
-- A certificate is `taken` when another user's attribute holds its SHA-256.  There is no unique
-  constraint behind that check: two different users adding the same certificate at the same moment
-  can both succeed, after which the ircd's lookup finds two users for it (and should refuse the login).
+- **Nobody can edit it, admins included**: the user sees it, the account REST API refuses a change
+  with `error-user-attribute-read-only`, and so does the admin API (400), while an admin-API user
+  update that leaves it out (for example `"attributes": {}`) keeps it.  An admin adds or removes the
+  credential instead.
+- A certificate is `taken` when another user's attribute holds its SHA-256, so a value with no
+  credential behind it on another user blocks the real owner with 409 until it is cleared.
+- There is no unique constraint behind that check: two adds of the same certificate at the same
+  moment (by two users, or twice by one) can both succeed, so an IRC server must refuse a lookup
+  that finds two users.
 
 The set-up tool creates `irc-manage-certfp` beside `irc-read-credentials` (and grants both to
 `--service-client`), declares `x509_fingerprints` in the realm's User Profile (multivalued, view
-for `user` and `admin`, edit for `admin` only; the rest of the profile is left as it is), and adds
+for `user` and `admin`, edit for nobody; a declaration an earlier version made with edit for
+`admin` is corrected, and the rest of the profile is left as it is), and adds
 the `irc-certfp-mirror` listener.  The declaration is what lets the admin user representation show
 the attribute in a realm whose unmanaged-attribute policy is off; the admin search by
 `x509_fingerprints:<sha256>` finds the user either way.
