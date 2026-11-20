@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Load the password hashes of an LDAP directory (an LDIF export) into Keycloak.  Standard library only.
 
-    import_ldap_hashes.py --ldif FILE --url U --realm R --admin-user A --admin-pass-env VAR [--uid-attr uid] [--apply]
+    import_ldap_hashes.py --ldif FILE --url U --realm R --admin-user A --admin-pass-env VAR [--uid-attr uid]
+                          [--apply] [--allow-linked]
 
 For each entry of the LDIF file, finds the Keycloak user of that name and, when the entry's
 `userPassword` is a {MD5} or {SSHA} hash and the user has no password yet, loads it through the admin
@@ -10,8 +11,19 @@ original password, and Keycloak re-hashes it to the realm's policy at that first
 
 Without --apply nothing is changed: the tool only reports what it would do.  Run it that way first.
 
+Run it after the users are unlinked from the LDAP provider (Keycloak's "Unlink users", which keeps the
+accounts and their ids) and the provider is removed.  A user still linked to a user-storage provider is
+not loaded (outcome `linked`) unless --allow-linked is given.  Loading a linked user freezes their
+password: Keycloak asks the directory only for a user with no local password, so from then on a
+password changed in the directory is refused and the old one still logs in; a password reset through
+Keycloak answers 204, yet the new password is refused and the old one still logs in; a later run
+reports `already-has-password`, so it cannot refresh the hash; and the user's SCRAM verifier is not
+served until their next password login.
+
 Prints one line per outcome with its count:
   loaded (would-load without --apply)   the hash was loaded
+  linked                                the user is still linked to a user-storage provider (LDAP);
+                                        not loaded (see --allow-linked)
   already-has-password                  the user has a password credential; left alone
   no-such-user                          no Keycloak user of that name
   no-password                           the entry has no userPassword
@@ -22,8 +34,10 @@ Prints one line per outcome with its count:
                                         standard error, by user name, and the run goes on
 
 Exit status: 0 when no user failed; 1 when at least one user failed; 2 on a usage error or when the
-admin login or the connection fails.  A hash is never printed, and the admin password is read from
-the environment variable named by --admin-pass-env.
+admin login or the connection fails (the counts of what was done until then are printed first).
+The admin token is renewed during the run, so a large file is not cut off by the token's lifespan.
+A hash is never printed, and the admin password is read from the environment variable named by
+--admin-pass-env.
 """
 from __future__ import annotations
 
@@ -37,7 +51,7 @@ import sys
 import urllib.parse
 from typing import Optional
 
-from irc_realm_setup import Session, login
+from irc_realm_setup import Session
 
 NO_SCHEME = "(no scheme prefix)"
 LABEL = "ldap-import"
@@ -157,8 +171,12 @@ def classify(user_password: Optional[str]) -> Optional[str]:
     return None
 
 
-def process_user(session, realm, name, user_password, apply):
-    """The outcome for one LDIF entry; loads the hash when `apply`.  Raises RuntimeError on an API refusal."""
+def process_user(session, realm, name, user_password, apply, allow_linked=False):
+    """The outcome for one LDIF entry; loads the hash when `apply`.  Raises RuntimeError on an API refusal.
+
+    A user linked to a user-storage provider (a non-empty `federationLink`) is `linked` and left alone
+    unless `allow_linked`.
+    """
     r = urllib.parse.quote(realm, safe="")
     _, users = session.request("GET", "/admin/realms/%s/users?username=%s&exact=true"
                                % (r, urllib.parse.quote(name, safe="")))
@@ -168,6 +186,8 @@ def process_user(session, realm, name, user_password, apply):
     early = classify(user_password)
     if early:
         return early
+    if user.get("federationLink") and not allow_linked:
+        return "linked"
     _, creds = session.request("GET", "/admin/realms/%s/users/%s/credentials" % (r, user["id"]))
     if any(c.get("type") == "password" and c.get("credentialData") for c in creds):
         return "already-has-password"
@@ -187,6 +207,10 @@ def main(argv=None):
     p.add_argument("--admin-pass-env", required=True, help="name of the environment variable holding the admin password")
     p.add_argument("--uid-attr", default="uid", help="the LDIF attribute holding the user name (default uid)")
     p.add_argument("--apply", action="store_true", help="load the hashes (without it nothing is changed)")
+    p.add_argument("--allow-linked", action="store_true",
+                   help="also load users still linked to a user-storage provider (LDAP); this freezes their "
+                        "password: changes made in the directory or through Keycloak no longer take effect, "
+                        "and a later run cannot refresh the hash")
     a = p.parse_args(argv)
     password = os.environ.get(a.admin_pass_env)
     if password is None:
@@ -199,22 +223,29 @@ def main(argv=None):
         print("error: cannot read %s: %s" % (a.ldif, e.__class__.__name__), file=sys.stderr)
         return 2
     counts = {}
+    done = "loaded" if a.apply else "would-load"
+
+    def summary():
+        counts.setdefault(done, 0)
+        for outcome in sorted(counts):
+            print("%s %d" % (outcome, counts[outcome]))
+
     try:
-        session = Session(a.url, login(a.url, a.admin_user, password))
+        session = Session(a.url, a.admin_user, password)
         for name, user_password in entries:
             try:
-                outcome = process_user(session, a.realm, name, user_password, a.apply)
+                outcome = process_user(session, a.realm, name, user_password, a.apply, a.allow_linked)
             except (RuntimeError, ValueError, KeyError) as e:
                 print("error: user %s: %s" % (name, e), file=sys.stderr)
                 outcome = "failed"
             counts[outcome] = counts.get(outcome, 0) + 1
-    except (RuntimeError, OSError) as e:
-        print("error: %s" % e, file=sys.stderr)
+    except (RuntimeError, OSError) as e:   # the admin login, or the connection (urllib's URLError is an OSError)
+        print("error: %s" % (e,), file=sys.stderr)
+        if counts:
+            print("stopped after %d of %d entries; counts so far:" % (sum(counts.values()), len(entries)))
+            summary()
         return 2
-    done = "loaded" if a.apply else "would-load"
-    counts.setdefault(done, 0)
-    for outcome in sorted(counts):
-        print("%s %d" % (outcome, counts[outcome]))
+    summary()
     return 1 if counts.get("failed") else 0
 
 

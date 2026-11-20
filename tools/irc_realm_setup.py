@@ -32,12 +32,22 @@ realm's event listeners, keeping the others; it keeps the attribute right when a
 removed on the account page or through the admin API.
 
 With --drop-legacy-scram-attributes, also removes the SCRAM verifier user attributes of earlier
-versions (scram_sha256_*, x3_scram_*) from every user and prints how many users it changed.
+versions (scram_sha256_*, x3_scram_*) from every user and prints how many users it changed.  A user
+the admin API refuses is reported on standard error by name and counted as failed; the run goes on.
+
+The admin token is renewed during the run (before it expires, or when a request answers 401), so a
+long run is not cut off by the master realm's short token lifespan.
+
+Exit status: 0 when everything is in place; 1 on any error (a refusal by the admin API, a flow
+without a password step, a user --drop-legacy-scram-attributes could not change, a failed admin
+login, Keycloak unreachable or answering something that is not JSON), reported as one line on
+standard error; 2 when the admin password's environment variable is not set.
 """
 import argparse
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -74,35 +84,69 @@ LEGACY_SCRAM_PREFIX = "x3_scram_"   # X3's x3_scram_* and x3_scram_sha256_*
 
 
 class Session:
-    """A minimal admin-API client: one bearer token, JSON in and out."""
+    """A minimal admin-API client, JSON in and out, logged in as an admin of the master realm.
 
-    def __init__(self, url, token):
+    An admin token lives briefly (the master realm's default is 60 s), so the session logs in again
+    shortly before the token's `expires_in` runs out, and once more when a request answers 401
+    (then it retries that request once).  A connection failure raises OSError (urllib's URLError);
+    an HTTP refusal or a reply that is not JSON raises RuntimeError.
+    """
+
+    def __init__(self, url, user, password, opener=None, clock=time.monotonic):
         self.url = url.rstrip("/")
-        self.token = token
+        self._user = user
+        self._password = password
+        self._open = opener or urllib.request.urlopen
+        self._clock = clock
+        self._token = None
+        self._renew_at = None
+        self.login()
+
+    def login(self):
+        data = urllib.parse.urlencode({"grant_type": "password", "client_id": "admin-cli",
+                                       "username": self._user, "password": self._password}).encode()
+        req = urllib.request.Request(self.url + "/realms/master/protocol/openid-connect/token", data=data)
+        try:
+            with self._open(req) as r:
+                raw = r.read()
+        except urllib.error.HTTPError as e:
+            raise RuntimeError("admin login failed: HTTP %d" % e.code)
+        try:
+            reply = json.loads(raw)
+            token = reply["access_token"]
+        except (ValueError, KeyError, TypeError):
+            raise RuntimeError("admin login failed: the token endpoint's reply is not a token")
+        expires_in = reply.get("expires_in")
+        self._token = token
+        if isinstance(expires_in, (int, float)) and expires_in > 0:
+            # Renew 10 s early, or half-way through a token that lives under 20 s.
+            self._renew_at = self._clock() + expires_in - min(10, expires_in / 2)
+        else:
+            self._renew_at = None
+
+    def _send(self, method, path, data):
+        req = urllib.request.Request(self.url + path, data=data, method=method, headers={
+            "Authorization": "Bearer " + self._token, "Content-Type": "application/json"})
+        try:
+            with self._open(req) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
 
     def request(self, method, path, body=None, ok=(200, 201, 204)):
+        if self._renew_at is not None and self._clock() >= self._renew_at:
+            self.login()
         data = None if body is None else json.dumps(body).encode()
-        req = urllib.request.Request(self.url + path, data=data, method=method, headers={
-            "Authorization": "Bearer " + self.token, "Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req) as r:
-                status, raw = r.status, r.read()
-        except urllib.error.HTTPError as e:
-            status, raw = e.code, e.read()
+        status, raw = self._send(method, path, data)
+        if status == 401:
+            self.login()
+            status, raw = self._send(method, path, data)
         if status not in ok:
             raise RuntimeError("%s %s: HTTP %d" % (method, path, status))
-        return status, (json.loads(raw) if raw else None)
-
-
-def login(url, user, password):
-    data = urllib.parse.urlencode({"grant_type": "password", "client_id": "admin-cli",
-                                   "username": user, "password": password}).encode()
-    req = urllib.request.Request(url.rstrip("/") + "/realms/master/protocol/openid-connect/token", data=data)
-    try:
-        with urllib.request.urlopen(req) as r:
-            return json.load(r)["access_token"]
-    except urllib.error.HTTPError as e:
-        raise RuntimeError("admin login failed: HTTP %d" % e.code)
+        try:
+            return status, (json.loads(raw) if raw else None)
+        except ValueError:
+            raise RuntimeError("%s %s: the reply is not JSON" % (method, path))
 
 
 def ensure_role(session, realm, service_client=None):
@@ -325,14 +369,17 @@ def _is_legacy_scram(name):
 
 
 def drop_legacy_scram_attributes(session, realm, page=100):
-    """Remove the legacy SCRAM verifier attributes from every user; print and return how many users changed."""
+    """Remove the legacy SCRAM verifier attributes from every user; print and return (users changed, users failed).
+
+    A user the admin API refuses is reported on standard error by name, counted as failed, and the run goes on.
+    """
     r = _q(realm)
     _, profile = session.request("GET", "/admin/realms/%s/users/profile" % r)
     policy = (profile or {}).get("unmanagedAttributePolicy")
     if policy not in ("ENABLED", "ADMIN_EDIT"):
         raise RuntimeError("realm %s: the unmanaged attribute policy is %s; the legacy attributes can be "
                            "removed only when it is ENABLED or ADMIN_EDIT" % (realm, policy or "off"))
-    changed = 0
+    changed = failed = 0
     first = 0
     while True:
         _, users = session.request("GET", "/admin/realms/%s/users?briefRepresentation=false&first=%d&max=%d"
@@ -343,13 +390,21 @@ def drop_legacy_scram_attributes(session, realm, page=100):
             if not any(_is_legacy_scram(k) for k in (listed.get("attributes") or {})):
                 continue
             user_path = "/admin/realms/%s/users/%s" % (r, listed["id"])
-            _, user = session.request("GET", user_path)
-            user["attributes"] = {k: v for k, v in (user.get("attributes") or {}).items() if not _is_legacy_scram(k)}
-            session.request("PUT", user_path, user)
+            try:
+                _, user = session.request("GET", user_path)
+                user["attributes"] = {k: v for k, v in (user.get("attributes") or {}).items()
+                                      if not _is_legacy_scram(k)}
+                session.request("PUT", user_path, user)
+            except RuntimeError as e:
+                print("error: user %s: %s" % (listed.get("username", listed["id"]), e), file=sys.stderr)
+                failed += 1
+                continue
             changed += 1
         first += len(users)
     print("removed legacy SCRAM attributes from %d user(s)" % changed)
-    return changed
+    if failed:
+        print("failed for %d user(s)" % failed)
+    return changed, failed
 
 
 def main(argv=None):
@@ -367,7 +422,7 @@ def main(argv=None):
         print("environment variable %s is not set" % a.admin_pass_env, file=sys.stderr)
         return 2
     try:
-        session = Session(a.url, login(a.url, a.admin_user, password))
+        session = Session(a.url, a.admin_user, password)
         flows = plan_flows(session, a.realm)   # refuses before the first write
         ensure_role(session, a.realm, a.service_client)
         ensure_required_action(session, a.realm)
@@ -375,9 +430,11 @@ def main(argv=None):
         ensure_event_listener(session, a.realm)
         apply_flows(session, a.realm, flows)
         if a.drop_legacy_scram_attributes:
-            drop_legacy_scram_attributes(session, a.realm)
-    except RuntimeError as e:
-        print("error: %s" % e, file=sys.stderr)
+            _, failed = drop_legacy_scram_attributes(session, a.realm)
+            if failed:
+                return 1
+    except (RuntimeError, OSError, ValueError) as e:   # OSError: urllib's URLError, a refused or lost connection
+        print("error: %s" % (e,), file=sys.stderr)
         return 1
     return 0
 

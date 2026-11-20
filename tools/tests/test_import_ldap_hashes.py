@@ -1,10 +1,16 @@
+import contextlib
+import io
 import json
 import os
 import sys
+import tempfile
 import unittest
+import urllib.error
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from import_ldap_hashes import parse_ldif, scheme_of, to_credential  # noqa: E402
+import import_ldap_hashes  # noqa: E402
+from import_ldap_hashes import parse_ldif, process_user, scheme_of, to_credential  # noqa: E402
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "sample.ldif")
 MD5 = "{MD5}Xr4ilOzQ4PCOq3aQ0qbuaQ=="
@@ -76,6 +82,70 @@ class ParseLdif(unittest.TestCase):
     def test_other_uid_attribute(self):
         text = "dn: cn=a,dc=x\ncn: alice\nuid: nope\nuserPassword: x\n"
         self.assertEqual(parse_ldif(text, uid_attr="cn"), [("alice", "x")])
+
+
+class FakeSession:
+    """Answers process_user's admin-API calls for the users in `users` (name -> representation)."""
+
+    def __init__(self, users, fail_after=None):
+        self.users = users
+        self.lookups = 0
+        self.fail_after = fail_after
+        self.loaded = []
+
+    def request(self, method, path, body=None, ok=(200, 201, 204)):
+        if "/users?username=" in path:
+            self.lookups += 1
+            if self.fail_after is not None and self.lookups > self.fail_after:
+                raise urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer"))
+            name = path.split("username=")[1].split("&")[0]
+            return 200, [self.users[name]] if name in self.users else []
+        if path.endswith("/credentials"):
+            return 200, []
+        self.loaded.append(path)
+        return 204, None
+
+
+class LinkedUsers(unittest.TestCase):
+    LINKED = {"id": "1", "username": "lin", "federationLink": "ldap-provider-id"}
+
+    def test_a_linked_user_is_not_loaded_by_default(self):
+        for apply in (False, True):
+            s = FakeSession({"lin": self.LINKED})
+            self.assertEqual(process_user(s, "r", "lin", MD5, apply), "linked")
+            self.assertEqual(s.loaded, [])
+
+    def test_allow_linked_loads_it(self):
+        s = FakeSession({"lin": self.LINKED})
+        self.assertEqual(process_user(s, "r", "lin", MD5, False, allow_linked=True), "would-load")
+        self.assertEqual(process_user(s, "r", "lin", MD5, True, allow_linked=True), "loaded")
+        self.assertEqual(len(s.loaded), 1)
+
+    def test_an_empty_federation_link_is_not_linked(self):
+        s = FakeSession({"u": {"id": "2", "username": "u", "federationLink": ""}})
+        self.assertEqual(process_user(s, "r", "u", MD5, False), "would-load")
+
+
+class ConnectionLostPartWay(unittest.TestCase):
+    def test_the_summary_so_far_is_printed_before_exit_2(self):
+        users = {n: {"id": n, "username": n} for n in ("alice", "bob", "dave")}
+        fake = FakeSession(users, fail_after=2)
+        out, err = io.StringIO(), io.StringIO()
+        with tempfile.TemporaryDirectory() as d:
+            ldif = os.path.join(d, "u.ldif")
+            with open(ldif, "w") as f:
+                f.write("dn: uid=alice\nuid: alice\nuserPassword: %s\n\ndn: uid=bob\nuid: bob\n\n"
+                        "dn: uid=dave\nuid: dave\nuserPassword: %s\n" % (MD5, MD5))
+            with mock.patch.object(import_ldap_hashes, "Session", return_value=fake), \
+                    mock.patch.dict(os.environ, {"KC_PW": "pw"}), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                status = import_ldap_hashes.main(["--ldif", ldif, "--url", "http://kc.test", "--realm", "r",
+                                                  "--admin-user", "a", "--admin-pass-env", "KC_PW"])
+        self.assertEqual(status, 2)
+        self.assertIn("would-load 1", out.getvalue())
+        self.assertIn("no-password 1", out.getvalue())
+        self.assertIn("error: ", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
 
 
 if __name__ == "__main__":
