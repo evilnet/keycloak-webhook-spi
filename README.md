@@ -265,15 +265,18 @@ and the path segment is percent-decoded.  An unknown user is 404 with body
 
 ```json
 {"id": "<uuid>", "username": "alice", "state": "ok", "reasons": [],
- "scram": {"salt": "<b64>", "iterations": 4096, "storedKey": "<b64>", "serverKey": "<b64>"}}
+ "scram": {"salt": "<b64>", "iterations": 4096, "storedKey": "<b64>", "serverKey": "<b64>"},
+ "certFingerprints": ["<64 uppercase hex>"]}
 ```
 
 `scram` is left out when the user has no SCRAM verifier or when the verifier no longer matches
 the user's current password.  `ecdsaPublicKey` (the user's ECDSA key as canonical PEM, see
-"ECDSA keys" below) is present only when the user has one.  The response carries the StoredKey
-and ServerKey by design; the endpoint never logs them.
+"ECDSA keys" below) is present only when the user has one.  `certFingerprints` is always
+present: the SHA-256 of each of the user's certificates (see "Certificates" below), `[]` when
+there are none.  The response carries the StoredKey and ServerKey by design; the endpoint never
+logs them.
 
-Create the role (and give it to the IRC server's service account), and put the login steps in
+Create the roles (and give them to the IRC server's service account), and put the login steps in
 the realm's flows (see "Password grant: why an account was refused" and "SCRAM verifier" below),
 with the realm set-up tool, which is idempotent
 and uses only the Python standard library:
@@ -411,6 +414,77 @@ The realm set-up tool registers `irc-ecdsa-enroll` and enables it (it is not a d
 no user is asked for a key at login).  The account page lists the type only because
 `irc-credential-sync` (in the flows the tool binds) names it as an optional reference category;
 without that step in an enabled flow the entry is not shown.
+
+## Certificates
+
+A user can log in on IRC with a TLS client certificate (SASL EXTERNAL).  Each certificate is a
+credential of type `irc-certfp`, one per certificate, named by two digests of its DER in
+uppercase hex without separators: the SHA-512, its name in IRCv3 `draft/client-cert`, and the
+SHA-256, by which the ircd and X3 look a certificate up.  It holds no secret: `credentialData` is
+`{"sha256": "<64 hex>", "sha512": "<128 hex>"}` and `userLabel` is the name the user gave the
+certificate (1 to 64 bytes of UTF-8, no control characters).  Nobody types a fingerprint: only the
+IRC server, which saw the user connect with the certificate, adds one.
+
+The IRC server manages them with a bearer token whose realm roles include `irc-manage-certfp`
+(no token is 401, a token without the role is 403, checked before the user is looked up; an
+unknown user is 404 `{"error": "user_not_found"}`; replies are sent with `Cache-Control: no-store`):
+
+- `PUT /realms/{realm}/irc/certfp/{username}` with `{"sha256": "...", "sha512": "...", "name": "..."}`:
+  201 added; 200 already present (both digests match one of the user's certificates; its name is
+  kept, a repeated add never renames); 409 `{"error": "taken"}` when another user of the realm
+  holds the SHA-256; 400 `{"error": "bad_fingerprint"}` for a digest that is not uppercase hex of
+  its length, or when exactly one of the two digests matches a certificate the user already has;
+  400 `{"error": "bad_name"}`.  A success carries the entry, as in the list below.
+- `DELETE /realms/{realm}/irc/certfp/{username}/{sha512}`: 204, or 404 `{"error": "not_found"}`
+  (also for a value that is not a well-formed SHA-512).
+- `GET /realms/{realm}/irc/certfp/{username}`:
+  `{"certificates": [{"sha512": "...", "sha256": "...", "name": "...", "createdDate": <ms>}]}`, oldest first.
+
+An admin can also load one through the admin API as a credential
+(`{"type": "irc-certfp", "userLabel": "<name>", "credentialData": "{\"sha256\": ..., \"sha512\": ...}"}`);
+it goes through the same checks (400 for a malformed pair or name, 409 for a certificate another
+user holds, nothing changed for one the user already has).
+
+The user sees the certificates on the account page ("IRC login (certificate)") and can remove
+them there; there is no set-up action, so the entry is shown only to a user who has one.  Adding
+one from the account page (a required action reading the certificate the browser presented and
+calling the same code) is a possible later addition.
+
+**The attribute `x509_fingerprints` is an index derived from the credentials.**  After every add
+and removal it is rewritten to exactly the SHA-256 values of the user's `irc-certfp` credentials
+(one value each, 64 uppercase hex); the ircd's login lookup searches it.  The rewrite is part of
+the same transaction as the change: if it fails, the change is undone too.  It is written through
+Keycloak's own user storage, so it also works for a user linked to a READ_ONLY LDAP provider.
+
+- Removal through the IRC endpoint rewrites it directly.  Removal on the account page (the
+  account REST API and the account console's `delete_credential` action) and through the admin
+  API (`DELETE /admin/realms/{realm}/users/{id}/credentials/{credentialId}`) does not reach this
+  code, so the event listener **`irc-certfp-mirror`** rewrites it, in the same transaction, when
+  those removals send their event.  It reconciles on any credential removal of the user.  If the
+  rewrite fails it marks the transaction for rollback, so the removal is undone; the page may still
+  report success.  The set-up tool adds the listener to the realm's event listeners, keeping the
+  others, and **it must stay enabled**: without it those removals leave the removed certificate's
+  SHA-256 in the attribute until the user's next add or removal through the IRC endpoint.
+- **An IRC server must check `certFingerprints` in the read endpoint**, which is computed from the
+  credentials, never from the attribute: accept a certificate login only when the presented SHA-256
+  is in that list.  A value that is ever stale in the attribute then fails closed.
+- **Values already in the attribute are overwritten**, including values with no credential behind
+  them: the attribute is derived, never typed.  Before deploying, check for existing
+  `x509_fingerprints` values (for example certificates set by hand) and enrol them as credentials,
+  or they disappear at that user's next credential change.
+- Users cannot edit it (the account REST API refuses with `error-user-attribute-read-only`); they
+  can see it.  Admins can edit it, as the User Profile declaration below says, but a value an admin
+  types is overwritten at the next change and never appears in `certFingerprints`.
+- A certificate is `taken` when another user's attribute holds its SHA-256.  There is no unique
+  constraint behind that check: two different users adding the same certificate at the same moment
+  can both succeed, after which the ircd's lookup finds two users for it (and should refuse the login).
+
+The set-up tool creates `irc-manage-certfp` beside `irc-read-credentials` (and grants both to
+`--service-client`), declares `x509_fingerprints` in the realm's User Profile (multivalued, view
+for `user` and `admin`, edit for `admin` only; the rest of the profile is left as it is), and adds
+the `irc-certfp-mirror` listener.  The declaration is what lets the admin user representation show
+the attribute in a realm whose unmanaged-attribute policy is off; the admin search by
+`x509_fingerprints:<sha256>` finds the user either way.
 
 ## Development
 

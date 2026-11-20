@@ -1,1 +1,2 @@
 io.github.evilnet.keycloak.webhook.WebhookEventListenerProviderFactory
+io.github.evilnet.keycloak.irc.certfp.IrcCertfpMirrorListenerFactory

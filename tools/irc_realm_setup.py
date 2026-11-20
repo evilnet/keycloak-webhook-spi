@@ -4,8 +4,9 @@
     irc_realm_setup.py --url U --realm R --admin-user A --admin-pass-env VAR [--service-client CLIENT]
                        [--drop-legacy-scram-attributes]
 
-Creates the realm role `irc-read-credentials` that GET /realms/R/irc/credentials/{username}
-requires and, with --service-client, grants it to that client's service account.
+Creates the realm roles `irc-read-credentials` (GET /realms/R/irc/credentials/{username}) and
+`irc-manage-certfp` (/realms/R/irc/certfp/{username}) and, with --service-client, grants both to
+that client's service account.
 
 Copies the realm's bound direct-grant and browser flows (whatever they are: the built-in ones
 or custom ones) to `irc direct grant` and `irc browser`, puts the IRC steps in each as REQUIRED,
@@ -23,6 +24,12 @@ step, it exits 1 before changing anything.
 Registers and enables the required action `irc-ecdsa-enroll` (not a default action), with which
 a user adds an ECDSA key from the account page.
 
+Declares the user attribute `x509_fingerprints` in the realm's User Profile (multivalued, seen by
+the user and admins, edited by admins only); it is the index the irc-certfp credentials keep, and
+the ircd searches it for a certificate login.  Adds the event listener `irc-certfp-mirror` to the
+realm's event listeners, keeping the others; it keeps the attribute right when a certificate is
+removed on the account page or through the admin API.
+
 With --drop-legacy-scram-attributes, also removes the SCRAM verifier user attributes of earlier
 versions (scram_sha256_*, x3_scram_*) from every user and prints how many users it changed.
 """
@@ -34,7 +41,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-ROLE = "irc-read-credentials"
+# (name, description) of each realm role the tool creates and grants to --service-client.
+ROLES = (
+    ("irc-read-credentials", "Read IRC credentials and account state (irc SPI endpoint)"),
+    ("irc-manage-certfp", "Add, list and remove users' IRC certificates (irc SPI endpoint)"),
+)
 
 SYNC_STEP = "irc-credential-sync"
 ACCOUNT_STATE_STEP = "irc-account-state"
@@ -49,6 +60,12 @@ FLOW_COPIES = (
 
 ECDSA_ENROLL = "irc-ecdsa-enroll"
 ECDSA_ENROLL_NAME = "IRC: add an ECDSA key"
+
+CERTFP_ATTRIBUTE = "x509_fingerprints"
+CERTFP_DISPLAY_NAME = "IRC certificate fingerprints (SHA-256)"
+CERTFP_VIEW = ("admin", "user")
+CERTFP_EDIT = ("admin",)
+CERTFP_LISTENER = "irc-certfp-mirror"
 
 LEGACY_SCRAM_ATTRIBUTES = ("scram_sha256_salt", "scram_sha256_iterations",
                            "scram_sha256_stored_key", "scram_sha256_server_key")
@@ -88,13 +105,16 @@ def login(url, user, password):
 
 
 def ensure_role(session, realm, service_client=None):
-    """Create the role if missing; with service_client, grant it to that client's service account."""
+    """Create the roles if missing; with service_client, grant them to that client's service account."""
     r = urllib.parse.quote(realm, safe="")
-    status, role = session.request("GET", "/admin/realms/%s/roles/%s" % (r, ROLE), ok=(200, 404))
-    if status == 404:
-        session.request("POST", "/admin/realms/%s/roles" % r, {
-            "name": ROLE, "description": "Read IRC credentials and account state (irc SPI endpoint)"})
-        _, role = session.request("GET", "/admin/realms/%s/roles/%s" % (r, ROLE))
+    roles = []
+    for name, description in ROLES:
+        path = "/admin/realms/%s/roles/%s" % (r, _q(name))
+        status, role = session.request("GET", path, ok=(200, 404))
+        if status == 404:
+            session.request("POST", "/admin/realms/%s/roles" % r, {"name": name, "description": description})
+            _, role = session.request("GET", path)
+        roles.append(role)
     if service_client:
         _, clients = session.request("GET", "/admin/realms/%s/clients?clientId=%s&search=false"
                                      % (r, urllib.parse.quote(service_client, safe="")))
@@ -104,8 +124,10 @@ def ensure_role(session, realm, service_client=None):
         _, account = session.request("GET", "/admin/realms/%s/clients/%s/service-account-user" % (r, client["id"]))
         mappings = "/admin/realms/%s/users/%s/role-mappings/realm" % (r, account["id"])
         _, current = session.request("GET", mappings)
-        if not any(m["name"] == ROLE for m in current):
-            session.request("POST", mappings, [{"id": role["id"], "name": ROLE}])
+        held = {m["name"] for m in current}
+        missing = [{"id": role["id"], "name": role["name"]} for role in roles if role["name"] not in held]
+        if missing:
+            session.request("POST", mappings, missing)
 
 
 def ensure_required_action(session, realm):
@@ -119,6 +141,39 @@ def ensure_required_action(session, realm):
         _, action = session.request("GET", path)
     if not action.get("enabled") or action.get("defaultAction"):
         session.request("PUT", path, dict(action, enabled=True, defaultAction=False))
+
+
+def ensure_certfp_attribute(session, realm):
+    """Declare x509_fingerprints in the User Profile: multivalued, view for user and admin, edit for admin only.
+
+    The rest of the profile is sent back as it was read; nothing is sent when the declaration is already so.
+    Other settings of an existing declaration (display name, validations, annotations) are kept.
+    """
+    path = "/admin/realms/%s/users/profile" % _q(realm)
+    _, profile = session.request("GET", path)
+    attributes = profile.setdefault("attributes", [])
+    declared = next((a for a in attributes if a.get("name") == CERTFP_ATTRIBUTE), None)
+    permissions = {"view": list(CERTFP_VIEW), "edit": list(CERTFP_EDIT)}
+    if declared is None:
+        attributes.append({"name": CERTFP_ATTRIBUTE, "displayName": CERTFP_DISPLAY_NAME,
+                           "multivalued": True, "permissions": permissions})
+    else:
+        current = declared.get("permissions") or {}
+        if (declared.get("multivalued") is True and sorted(current.get("view") or []) == sorted(CERTFP_VIEW)
+                and sorted(current.get("edit") or []) == sorted(CERTFP_EDIT)):
+            return
+        declared["multivalued"] = True
+        declared["permissions"] = permissions
+    session.request("PUT", path, profile)
+
+
+def ensure_event_listener(session, realm):
+    """Add irc-certfp-mirror to the realm's event listeners, keeping the ones there; nothing is sent when present."""
+    path = "/admin/realms/%s" % _q(realm)
+    _, rep = session.request("GET", path)
+    listeners = rep.get("eventsListeners") or []
+    if CERTFP_LISTENER not in listeners:
+        session.request("PUT", path, {"eventsListeners": listeners + [CERTFP_LISTENER]})
 
 
 def _q(value):
@@ -302,7 +357,7 @@ def main(argv=None):
     p.add_argument("--realm", required=True)
     p.add_argument("--admin-user", required=True)
     p.add_argument("--admin-pass-env", required=True, help="name of the environment variable holding the admin password")
-    p.add_argument("--service-client", help="client whose service account gets the role")
+    p.add_argument("--service-client", help="client whose service account gets the roles")
     p.add_argument("--drop-legacy-scram-attributes", action="store_true",
                    help="remove the scram_sha256_* and x3_scram_* user attributes from every user")
     a = p.parse_args(argv)
@@ -315,6 +370,8 @@ def main(argv=None):
         flows = plan_flows(session, a.realm)   # refuses before the first write
         ensure_role(session, a.realm, a.service_client)
         ensure_required_action(session, a.realm)
+        ensure_certfp_attribute(session, a.realm)
+        ensure_event_listener(session, a.realm)
         apply_flows(session, a.realm, flows)
         if a.drop_legacy_scram_attributes:
             drop_legacy_scram_attributes(session, a.realm)
