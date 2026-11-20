@@ -1,4 +1,4 @@
-package net.afternet.keycloak.webhook;
+package io.github.evilnet.keycloak.webhook;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;

@@ -1,4 +1,4 @@
-package net.afternet.keycloak.webhook;
+package io.github.evilnet.keycloak.webhook;
 
 import java.util.ArrayList;
 import java.util.Collections;

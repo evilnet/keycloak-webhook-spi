@@ -1,4 +1,4 @@
-package net.afternet.keycloak.webhook;
+package io.github.evilnet.keycloak.webhook;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import org.junit.jupiter.api.Test;

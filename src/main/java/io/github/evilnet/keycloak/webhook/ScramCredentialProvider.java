@@ -1,4 +1,4 @@
-package net.afternet.keycloak.webhook;
+package io.github.evilnet.keycloak.webhook;
 
 import org.jboss.logging.Logger;
 import org.keycloak.credential.CredentialInput;
