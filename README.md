@@ -2,6 +2,66 @@
 
 A reusable Keycloak extension that sends admin and user events to configurable webhook endpoints.
 
+## What the jar provides
+
+Besides the webhook listener, the jar lets IRC servers log users in against Keycloak alone, so
+an LDAP directory can be retired.  Each piece, with its id and the section that describes it:
+
+| Piece | Id | Section |
+|---|---|---|
+| Event listener sending admin and user events to the ircd | `webhook-events` | Quick Start, Configuration Options, Event Formats, Consumer contract |
+| Verify-only password hash providers for `{MD5}` (X3) and `{SSHA}` (OpenLDAP) | `x3-md5`, `ldap-ssha` | Legacy password hashes |
+| SCRAM-SHA-256 verifier credential type | `irc-scram-sha256` | SCRAM verifier |
+| Password policy that makes the verifier when a password is set | `scramSha256` | SCRAM verifier |
+| Authenticator making the verifier at password login, and removing legacy attribute verifiers that no longer match | `irc-credential-sync` | SCRAM verifier, Legacy attribute verifiers |
+| Authenticator refusing the password grant of an account that is not fully set up, with the reasons | `irc-account-state` | Account state, Password grant: why an account was refused |
+| ECDSA P-256 public key credential type | `irc-ecdsa-pubkey` | ECDSA keys |
+| Required action for adding an ECDSA key from the account page | `irc-ecdsa-enroll` | ECDSA keys |
+| TLS client certificate credential type, one per certificate | `irc-certfp` | Certificates |
+| Event listener keeping the user attribute `x509_fingerprints` equal to the certificate credentials | `irc-certfp-mirror` | Certificates |
+| Realm resource `irc`: `GET /realms/{realm}/irc/credentials/{username}` (role `irc-read-credentials`) and `PUT`/`GET`/`DELETE /realms/{realm}/irc/certfp/{username}[/{sha512}]` (role `irc-manage-certfp`) | `irc`, roles `irc-read-credentials`, `irc-manage-certfp` | Read endpoint, Certificates |
+| Realm set-up tool (roles, login flows, required action, User Profile declaration, listener) | `tools/irc_realm_setup.py` | Read endpoint, SCRAM verifier, ECDSA keys, Certificates |
+| Tool loading `{MD5}` and `{SSHA}` hashes from an LDIF export | `tools/import_ldap_hashes.py` | Loading LDAP password hashes |
+
+## Deployment order
+
+The jar changes how a realm behaves as soon as it is live, so do these in this order.
+
+1. **Before anything, look for existing values in the `x509_fingerprints` user attribute of the
+   realm.**  Once the jar manages certificates, that attribute is derived from the users'
+   `irc-certfp` credentials.  A value with no credential behind it is overwritten at that user's
+   next certificate add or removal.  Enrol such certificates as credentials first (see
+   "Certificates").
+2. **Install the jar and set the realm up.**  Copy the jar to `providers/` and restart Keycloak
+   (see "Deploy").  Add `scramSha256` to the realm's password policy.  Then run
+   `tools/irc_realm_setup.py` for the realm (see "Read endpoint" for the command).  It creates the
+   roles `irc-read-credentials` and `irc-manage-certfp` and grants both to the service client given
+   with `--service-client`; copies the flows the realm has bound for direct grant and browser logins
+   to `irc direct grant` and `irc browser`, puts the IRC steps in them and binds the copies to the
+   realm; registers and enables the required action `irc-ecdsa-enroll`; declares `x509_fingerprints`
+   in the User Profile; and adds the `irc-certfp-mirror` event listener to the realm's event
+   listeners.  **The listener must stay enabled.**
+3. **From the moment the jar is live, before any IRC server changes:** the jar no longer writes the
+   old attribute-form SCRAM verifier (`scram_sha256_*`, `x3_scram_*`), and it removes a user's old
+   ones when their password changes or when they no longer match at a password login (see "Legacy
+   attribute verifiers").  An IRC server that still reads those attributes has no SCRAM verifier for
+   such a user until it reads the endpoint instead; password logins keep working.  So switch the
+   IRC servers to the endpoint promptly after step 2.
+4. **For an LDAP-federated realm:** the LDAP provider's "Validate password policy" switch decides
+   whether a password change made through Keycloak refreshes the verifier at once (on) or only at
+   the user's next password login (off, Keycloak's default).  See "SCRAM verifier".
+5. **The IRC servers:** read credentials and account state from the endpoint; for certificate logins
+   check `certFingerprints` in the endpoint's reply (a server that only searches the attribute does
+   not get the protection against a stale value); and refuse a certificate lookup that finds two
+   users.  This is work on the IRC server and is not part of this jar.
+6. **Only after every IRC server has stopped reading the old attributes:** run
+   `tools/irc_realm_setup.py ... --drop-legacy-scram-attributes`.  It removes them from every user
+   and prints how many users it changed.
+7. **Before the LDAP directory is unlinked:** take the census of hash schemes in the directory (the
+   `ldapsearch` command under "Loading LDAP password hashes"), run `tools/import_ldap_hashes.py` as
+   a dry run, then again with `--apply`.  Only `{MD5}` and `{SSHA}` hashes are loaded; other schemes
+   are reported as `unsupported:<scheme>` and not loaded.
+
 ## Features
 
 - Sends Admin Events (user management, group membership, credentials) via HTTP POST
