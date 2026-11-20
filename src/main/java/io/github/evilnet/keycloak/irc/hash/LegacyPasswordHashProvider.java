@@ -46,8 +46,8 @@ public class LegacyPasswordHashProvider implements PasswordHashProvider {
             byte[] digest = Base64.getDecoder().decode(credential.getPasswordSecretData().getValue());
             byte[] salt = credential.getPasswordSecretData().getSalt();   // Keycloak decodes the base64 salt
             return verifier.verify(rawPassword, digest, salt == null ? new byte[0] : salt);
-        } catch (IllegalArgumentException e) {
-            return false;   // malformed base64 in the stored digest
+        } catch (RuntimeException e) {
+            return false;   // a stored value that cannot be decoded (malformed base64, no value): does not match
         }
     }
 

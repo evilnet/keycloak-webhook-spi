@@ -10,8 +10,10 @@ import java.security.NoSuchAlgorithmException;
  * MD5 and OpenLDAP's salted SHA-1 ({SSHA}).  Pure logic, no Keycloak types.
  *
  * <p>A legacy password with non-ASCII characters may have been hashed from its
- * ISO-8859-1 bytes or its UTF-8 bytes, so both are tried.  Digests are compared
- * in constant time.</p>
+ * ISO-8859-1 bytes or its UTF-8 bytes, so both are tried; the ISO-8859-1 attempt is made
+ * only when every character of the typed password is in ISO-8859-1 (otherwise Java would
+ * turn the others into {@code ?}, and a password differing only there would match).
+ * Digests are compared in constant time.</p>
  */
 public final class LegacyHashes {
 
@@ -36,11 +38,14 @@ public final class LegacyHashes {
         }
         boolean ok = false;
         for (Charset cs : CHARSETS) {
+            if (cs == StandardCharsets.ISO_8859_1 && !cs.newEncoder().canEncode(rawPassword)) {
+                continue;   // not a Latin-1 password: its Latin-1 bytes would not be the typed password
+            }
             try {
                 MessageDigest md = MessageDigest.getInstance(algorithm);
                 md.update(rawPassword.getBytes(cs));
                 md.update(salt);
-                // No short-circuit: both charsets are always evaluated.
+                // No short-circuit: every applicable charset is evaluated.
                 ok |= MessageDigest.isEqual(md.digest(), digest);
             } catch (NoSuchAlgorithmException e) {
                 throw new IllegalStateException(algorithm + " is not available", e);
