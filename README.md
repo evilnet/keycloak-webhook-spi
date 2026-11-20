@@ -163,6 +163,31 @@ copy of an accepted event (same event id, a signature no newer than the last acc
 one); this SPI's own retry of an accepted event, signed again with a newer `t`, is
 answered 200 and not acted on again, so a lost answer never applies an event twice.
 
+## Legacy password hashes
+
+When an LDAP directory is retired, its password hashes can be loaded into Keycloak
+and still verify, so nobody needs a password reset.  Two verify-only password hash
+providers are registered:
+
+| Algorithm id | Source | `secretData.value` | `secretData.salt` |
+|---|---|---|---|
+| `x3-md5` | X3's unsalted `{MD5}` | base64 of the 16-byte MD5 | `""` |
+| `ldap-ssha` | OpenLDAP `{SSHA}` | base64 of the 20-byte SHA-1 | base64 of the salt bytes |
+
+Both use `hashIterations` 1.  Load them as a pre-hashed credential on an existing
+user (the user id is kept):
+
+```json
+{"type": "password",
+ "secretData": "{\"value\":\"Xr4ilOzQ4PCOq3aQ0qbuaQ==\",\"salt\":\"\"}",
+ "credentialData": "{\"hashIterations\":1,\"algorithm\":\"x3-md5\"}"}
+```
+
+A password that contains non-ASCII characters may have been hashed from its
+ISO-8859-1 or its UTF-8 bytes, so both are tried.  The providers never produce
+hashes: after the first successful login Keycloak re-hashes the password to the
+realm's hashing policy, and the legacy hash is gone.
+
 ## Docker Integration
 
 ### Custom Keycloak Image
