@@ -29,4 +29,9 @@ class AccountStateTest {
         assertEquals(List.of("email_missing"), AccountState.of(true, List.of(), "", false, true, true).reasons());
         assertEquals(List.of("email_unverified"), AccountState.of(true, List.of(), "a@b", false, false, true).reasons());
     }
+
+    @Test void requiringAVerifiedEmailAlsoRequiresAnEmail() {
+        assertEquals(new AccountState("incomplete", List.of("email_missing")), AccountState.of(true, List.of(), null, false, false, true));
+        assertEquals(List.of("email_missing"), AccountState.of(true, List.of(), "", true, false, true).reasons());
+    }
 }

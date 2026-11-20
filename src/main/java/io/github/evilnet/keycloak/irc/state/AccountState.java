@@ -45,10 +45,9 @@ public record AccountState(String state, List<String> reasons) {
             }
         }
         boolean hasEmail = email != null && !email.isBlank();
-        if (requireEmail && !hasEmail) {
+        if ((requireEmail || requireVerifiedEmail) && !hasEmail) {   // a verified email cannot exist without an email
             reasons.add("email_missing");
-        }
-        if (requireVerifiedEmail && hasEmail && !emailVerified) {
+        } else if (requireVerifiedEmail && !emailVerified) {
             reasons.add("email_unverified");
         }
         return new AccountState(reasons.isEmpty() ? "ok" : "incomplete", reasons);

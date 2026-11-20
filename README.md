@@ -251,7 +251,9 @@ No reasons means `ok`.
 
 Two realm attributes switch the email rules on (both default `false`):
 `irc.requireEmail` (the user must have an email) and `irc.requireVerifiedEmail`
-(a user with an email must have verified it).
+(the user must have a verified email).  A user with no email (null or empty) gets
+`email_missing` when either is on; a user with an unverified email gets `email_unverified`
+when `irc.requireVerifiedEmail` is on.  The two email reasons never appear together.
 
 ## Read endpoint
 
