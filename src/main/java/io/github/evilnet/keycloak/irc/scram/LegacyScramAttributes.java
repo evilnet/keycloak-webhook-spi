@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.function.Function;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
+import org.keycloak.models.UserCredentialModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.UserProvider;
 import org.keycloak.models.cache.UserCache;
@@ -84,9 +85,21 @@ public final class LegacyScramAttributes {
         return stale;
     }
 
-    /** After a password login: removes the families that are not a verifier of the password just proven. */
+    /**
+     * After a password login: removes the families that are not a verifier of the password just proven.
+     * Does nothing when that password is no longer the user's (a password change committed after the
+     * login proved it), checked through Keycloak in this transaction and only when there is something to remove.
+     */
     public static void removeStale(KeycloakSession session, String realmId, String userId, String password) {
-        withLocalUser(session, realmId, userId, user -> staleAfterLogin(firstValues(user), password));
+        withLocalUser(session, realmId, userId, local -> {
+            List<String> stale = staleAfterLogin(firstValues(local), password);
+            if (stale.isEmpty()) {
+                return stale;
+            }
+            RealmModel realm = session.realms().getRealm(realmId);
+            UserModel user = session.users().getUserById(realm, userId);   // with federation, for an LDAP-linked user
+            return user != null && user.credentialManager().isValid(UserCredentialModel.password(password)) ? stale : List.of();
+        });
     }
 
     /** After a password set: removes every legacy attribute. */

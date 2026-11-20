@@ -11,14 +11,17 @@ import org.keycloak.authentication.AuthenticationFlowContext;
 import org.keycloak.authentication.Authenticator;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
+import org.keycloak.models.UserCredentialModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.representations.idm.CredentialRepresentation;
 
 /**
- * Runs directly after the password step of a login flow and keeps the user's SCRAM-SHA-256
- * verifier in step with the password just proven.  Keycloak sees the plaintext password only
- * at password set and at login; this is the login half (the {@code scramSha256} password
- * policy is the other).
+ * Keeps the user's SCRAM-SHA-256 verifier in step with the password a login just proved.
+ * Keycloak sees the plaintext password only at password set and at login; this is the login half
+ * (the {@code scramSha256} password policy is the other).  Where it sits: in {@code irc direct
+ * grant}, the last top-level step, after {@code irc-account-state} and every other step (the
+ * conditional OTP sub-flow included); in {@code irc browser}, directly after the username/password
+ * form, in the same (sub-)flow, since only that form's request carries the password.
  *
  * <p>It also removes each legacy attribute verifier ({@link LegacyScramAttributes}) that is not
  * a verifier of the password just proven, and keeps the ones that are.</p>
@@ -33,6 +36,12 @@ import org.keycloak.representations.idm.CredentialRepresentation;
  * enlisted by the password step, and the verifier is bound to the stored hash; enlisted after
  * that job, the sync sees the password as it will stay, so a re-hash on login never leaves the
  * verifier stale.</p>
+ *
+ * <p>The password was proven earlier in the request, so by the time a job runs a password change
+ * may have committed in between.  Each job therefore checks, in its own transaction, that the
+ * password is still the user's before it writes anything: otherwise it would store a verifier of
+ * the old password bound to the new password's fingerprint (served as current), or remove legacy
+ * attributes that do match the new password.</p>
  */
 public class IrcCredentialSyncAuthenticator implements Authenticator {
 
@@ -66,9 +75,22 @@ public class IrcCredentialSyncAuthenticator implements Authenticator {
             return;
         }
         IrcScramCredentialProvider scram = new IrcScramCredentialProvider(session);
-        if (needsNewVerifier(scram.current(user), password)) {
-            scram.store(realm, user, ScramVerifier.deriveRandom(password));
+        if (!needsNewVerifier(scram.current(user), password)) {
+            return;
         }
+        // Read the fingerprint before the check, both through this transaction's user: a password
+        // change committing between the two then fails the check rather than binding the old
+        // password's verifier to the new fingerprint.
+        String fingerprint = IrcScramCredentialProvider.passwordFingerprint(user);
+        if (!isCurrentPassword(user, password)) {
+            return;   // changed since the login proved it: store nothing, and keep the current verifier
+        }
+        scram.store(realm, user, ScramVerifier.deriveRandom(password), fingerprint);
+    }
+
+    /** True when {@code password} is still the user's password (checked through Keycloak, so LDAP-linked users too). */
+    private static boolean isCurrentPassword(UserModel user, String password) {
+        return user.credentialManager().isValid(UserCredentialModel.password(password));
     }
 
     /**

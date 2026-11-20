@@ -70,8 +70,12 @@ public class IrcScramCredentialProvider implements CredentialProvider<Credential
     /** The admin API path: stores what it is given and binds it to the fingerprint at this moment. */
     @Override
     public CredentialModel createCredential(RealmModel realm, UserModel user, CredentialModel credential) {
+        return create(user, credential, passwordFingerprint(user));
+    }
+
+    private CredentialModel create(UserModel user, CredentialModel credential, String fingerprint) {
         JsonObject data = parse(credential.getCredentialData());
-        data.addProperty("passwordFingerprint", passwordFingerprint(user));
+        data.addProperty("passwordFingerprint", fingerprint);
         credential.setType(TYPE);
         credential.setCredentialData(GSON.toJson(data));
         if (credential.getCreatedDate() == null) {
@@ -88,6 +92,14 @@ public class IrcScramCredentialProvider implements CredentialProvider<Credential
 
     /** Replaces any existing verifier of the user and binds the new one to the current password. */
     public void store(RealmModel realm, UserModel user, ScramVerifier v) {
+        store(realm, user, v, passwordFingerprint(user));
+    }
+
+    /**
+     * As {@link #store(RealmModel, UserModel, ScramVerifier)}, bound to {@code fingerprint}, a
+     * {@link #passwordFingerprint} the caller read when it checked that {@code v} is for the current password.
+     */
+    public void store(RealmModel realm, UserModel user, ScramVerifier v, String fingerprint) {
         Base64.Encoder b64 = Base64.getEncoder();
         JsonObject secret = new JsonObject();
         secret.addProperty("storedKey", b64.encodeToString(v.storedKey()));
@@ -98,7 +110,7 @@ public class IrcScramCredentialProvider implements CredentialProvider<Credential
         CredentialModel model = new CredentialModel();
         model.setSecretData(GSON.toJson(secret));
         model.setCredentialData(GSON.toJson(data));
-        createCredential(realm, user, model);
+        create(user, model, fingerprint);
     }
 
     /** The user's verifier; empty when absent, malformed, or bound to a password that is no longer the current one. */
