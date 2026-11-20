@@ -1,5 +1,6 @@
 package io.github.evilnet.keycloak.irc.certfp;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -33,5 +34,12 @@ class FingerprintsTest {
         assertFalse(Fingerprints.acceptableName("del\u007f"));
         assertFalse(Fingerprints.acceptableName("c1\u0085"));
         assertFalse(Fingerprints.acceptableName("lone \uD83D surrogate"));
+    }
+
+    @Test void aNameIsRepliedOnlyWhenAcceptable() {
+        assertEquals("laptop", Fingerprints.nameForReply("laptop"));
+        assertEquals("(invalid name)", Fingerprints.nameForReply("evil\r\nPRIVMSG #x :hi"));
+        assertEquals("(invalid name)", Fingerprints.nameForReply("x".repeat(212)));
+        assertEquals("(invalid name)", Fingerprints.nameForReply(null));
     }
 }

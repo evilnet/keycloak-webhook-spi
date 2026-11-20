@@ -6,9 +6,11 @@ import com.google.gson.JsonObject;
 import jakarta.ws.rs.core.Response;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
+import java.util.stream.Stream;
 import org.keycloak.common.util.Time;
 import org.keycloak.credential.CredentialModel;
 import org.keycloak.credential.CredentialProvider;
@@ -130,27 +132,46 @@ public class IrcCertfpCredentialProvider implements CredentialProvider<Credentia
         return AddResult.ADDED;
     }
 
-    /** Removes the user's certificate with this SHA-512 and rewrites {@value #ATTRIBUTE}; false when there is none (or the value is malformed). */
+    /**
+     * Removes the user's certificate with this SHA-512, every credential that holds it (concurrent adds can
+     * store one certificate twice), and rewrites {@value #ATTRIBUTE}; false when there is none (or the value
+     * is malformed).
+     */
     public boolean remove(RealmModel realm, UserModel user, String sha512) {
         if (!Fingerprints.wellFormedSha512(sha512)) {
             return false;
         }
-        Optional<Certificate> found = certificates(user).stream().filter(c -> c.sha512().equals(sha512)).findFirst();
-        if (found.isEmpty()) {
+        List<String> ids = stored(user).filter(c -> c.sha512().equals(sha512)).map(Certificate::credentialId).toList();
+        if (ids.isEmpty()) {
             return false;
         }
-        user.credentialManager().removeStoredCredentialById(found.get().credentialId());
+        ids.forEach(id -> user.credentialManager().removeStoredCredentialById(id));
         reconcile(session, realm, user.getId());
         return true;
     }
 
-    /** The user's certificates, oldest first; a credential whose data is not a well-formed pair is left out. */
+    /**
+     * The user's certificates, oldest first, each once: a certificate stored more than once (concurrent adds)
+     * is listed under its oldest credential.  A credential whose data is not a well-formed pair is left out.
+     */
     public List<Certificate> certificates(UserModel user) {
+        return oncePerCertificate(stored(user)
+                .sorted(Comparator.comparing(Certificate::createdDate, Comparator.nullsFirst(Comparator.naturalOrder())))
+                .toList());
+    }
+
+    /** Keeps the first entry of each SHA-512, in order. */
+    static List<Certificate> oncePerCertificate(List<Certificate> oldestFirst) {
+        Map<String, Certificate> first = new LinkedHashMap<>();
+        oldestFirst.forEach(c -> first.putIfAbsent(c.sha512(), c));
+        return List.copyOf(first.values());
+    }
+
+    /** Every well-formed certificate credential of the user, duplicates included, in no particular order. */
+    private static Stream<Certificate> stored(UserModel user) {
         return user.credentialManager().getStoredCredentialsByTypeStream(TYPE)
                 .map(IrcCertfpCredentialProvider::certificateOf)
-                .filter(Objects::nonNull)
-                .sorted(Comparator.comparing(Certificate::createdDate, Comparator.nullsFirst(Comparator.naturalOrder())))
-                .toList();
+                .filter(Objects::nonNull);
     }
 
     /** The SHA-256 values of the user's certificates, oldest first: what {@value #ATTRIBUTE} must hold. */

@@ -3,6 +3,7 @@ package io.github.evilnet.keycloak.irc.rest;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import io.github.evilnet.keycloak.irc.certfp.Fingerprints;
 import io.github.evilnet.keycloak.irc.certfp.IrcCertfpCredentialProvider;
 import io.github.evilnet.keycloak.irc.certfp.IrcCertfpCredentialProvider.AddResult;
 import io.github.evilnet.keycloak.irc.certfp.IrcCertfpCredentialProvider.Certificate;
@@ -32,6 +33,8 @@ import org.keycloak.models.UserModel;
  *   <li>{@code DELETE .../{sha512}}: 204, or 404 {@code not_found} (also for a malformed value).</li>
  *   <li>{@code GET}: 200 {@code {"certificates": [{"sha512", "sha256", "name", "createdDate"}]}}, oldest first.</li>
  * </ul>
+ * A {@code name} is replied only when {@link Fingerprints#acceptableName} accepts it, otherwise as
+ * {@value Fingerprints#INVALID_NAME}: Keycloak's own label routes can store any name.
  * An unknown user is 404 {@code user_not_found}.
  */
 public class IrcCertfpResource {
@@ -117,7 +120,7 @@ public class IrcCertfpResource {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("sha512", c.sha512());
         m.put("sha256", c.sha256());
-        m.put("name", c.name());
+        m.put("name", Fingerprints.nameForReply(c.name()));
         m.put("createdDate", c.createdDate());
         return m;
     }

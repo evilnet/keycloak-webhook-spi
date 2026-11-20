@@ -15,6 +15,9 @@ public final class Fingerprints {
     /** Longest name, in bytes of UTF-8. */
     public static final int MAX_NAME_BYTES = 64;
 
+    /** What a reply carries in place of a stored name that {@link #acceptableName} refuses. */
+    public static final String INVALID_NAME = "(invalid name)";
+
     private static final Pattern SHA256 = Pattern.compile("[0-9A-F]{64}");
     private static final Pattern SHA512 = Pattern.compile("[0-9A-F]{128}");
 
@@ -48,5 +51,14 @@ public final class Fingerprints {
         } catch (CharacterCodingException e) {
             return false;
         }
+    }
+
+    /**
+     * The name to put in a reply: {@code name} when {@link #acceptableName} accepts it, otherwise
+     * {@value #INVALID_NAME}.  A name can reach the store without the jar's check (the account REST API's
+     * and the admin API's label routes), and an IRC server may relay it on a line.
+     */
+    public static String nameForReply(String name) {
+        return acceptableName(name) ? name : INVALID_NAME;
     }
 }
